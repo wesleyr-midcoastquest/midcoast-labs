@@ -177,6 +177,7 @@ orchestration/        runs on the active MGMT (PowerShell 7)
 setup/
   New-LabSiteKit.ps1                   writes out/site-kit/<site>/ (RUNBOOK.md, proxmox-setup.sh)
   proxmox/proxmox-setup.sh             template; run the site kit's copy, not this one
+  proxmox/proxmox-teardown.sh          removes a site from Proxmox (keeps ISOs); run as-is
   mgmt/Join-LabTailnet.ps1             MGMT-00 joins the tailnet (site.yaml tailscale.enabled)
   mgmt/Install-MgmtTools.ps1           MGMT toolchain for the hand-build (wraps platform/roles/mgmt-tools.ps1)
   mgmt/Initialize-LabVault.ps1         KeePass vault + generated secrets
