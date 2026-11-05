@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Sysprep answer file for every CLONE of WIN2022-TEMPLATE and WIN11-TEMPLATE.
+     Specialize runs Cloudbase-Init (hostname from the config drive, extend C:).
+     ComputerName "*" is a placeholder; Cloudbase-Init sets the real name and
+     bootstrap.ps1 enforces it. -->
+<unattend xmlns="urn:schemas-microsoft-com:unattend"
+          xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State"
+          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+
+  <settings pass="specialize">
+    <component name="Microsoft-Windows-Shell-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+      <ComputerName>*</ComputerName>
+      <TimeZone>${time_zone}</TimeZone>
+      <RegisteredOrganization>MidCoast Lab</RegisteredOrganization>
+    </component>
+
+    <component name="Microsoft-Windows-Deployment" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+      <RunSynchronous>
+        <RunSynchronousCommand wcm:action="add">
+          <Order>1</Order>
+          <Path>reg.exe add HKLM\SYSTEM\CurrentControlSet\Control\BitLocker /v PreventDeviceEncryption /t REG_DWORD /d 1 /f</Path>
+          <Description>Prevent automatic device encryption on clones</Description>
+          <WillReboot>Never</WillReboot>
+        </RunSynchronousCommand>
+        <RunSynchronousCommand wcm:action="add">
+          <Order>2</Order>
+          <Path>cmd.exe /c ""C:\Program Files\Cloudbase Solutions\Cloudbase-Init\Python\Scripts\cloudbase-init.exe" --config-file "C:\Program Files\Cloudbase Solutions\Cloudbase-Init\conf\cloudbase-init-unattend.conf" &amp;&amp; exit 1 || exit 2"</Path>
+          <Description>Run Cloudbase-Init (specialize)</Description>
+          <WillReboot>Never</WillReboot>
+        </RunSynchronousCommand>
+        <RunSynchronousCommand wcm:action="add">
+          <Order>3</Order>
+          <Path>powershell.exe -NoProfile -Command "Get-LocalUser | Where-Object { $_.SID.Value -like 'S-1-5-21-*-500' } | Enable-LocalUser"</Path>
+          <Description>Enable the built-in Administrator before OOBE (client SKUs disable it on generalize; without an enabled account Windows 11 OOBE stops at "Who's going to use this device?")</Description>
+          <WillReboot>Never</WillReboot>
+        </RunSynchronousCommand>
+      </RunSynchronous>
+    </component>
+  </settings>
+
+  <settings pass="oobeSystem">
+    <component name="Microsoft-Windows-International-Core" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+      <InputLocale>en-US</InputLocale>
+      <SystemLocale>en-US</SystemLocale>
+      <UILanguage>en-US</UILanguage>
+      <UserLocale>en-US</UserLocale>
+    </component>
+
+    <component name="Microsoft-Windows-Shell-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+      <UserAccounts>
+        <AdministratorPassword>
+          <Value>${admin_pw_b64}</Value>
+          <PlainText>false</PlainText>
+        </AdministratorPassword>
+%{ if is_client ~}
+        <!-- Windows 11: OOBE finishes on its own only when it creates an account
+             (enabling the built-in Administrator isn't enough). bootstrap.ps1
+             deletes this account at its first stage. -->
+        <LocalAccounts>
+          <LocalAccount wcm:action="add">
+            <Name>MidCoastSetup</Name>
+            <DisplayName>MidCoast Lab setup (deleted by bootstrap)</DisplayName>
+            <Group>Administrators</Group>
+            <Password>
+              <Value>${localacct_pw_b64}</Value>
+              <PlainText>false</PlainText>
+            </Password>
+          </LocalAccount>
+        </LocalAccounts>
+%{ endif ~}
+      </UserAccounts>
+      <OOBE>
+        <HideEULAPage>true</HideEULAPage>
+        <HideLocalAccountScreen>true</HideLocalAccountScreen>
+        <HideOnlineAccountScreens>true</HideOnlineAccountScreens>
+        <HideWirelessSetupInOOBE>true</HideWirelessSetupInOOBE>
+        <ProtectYourPC>3</ProtectYourPC>
+        <SkipUserOOBE>true</SkipUserOOBE>
+      </OOBE>
+    </component>
+  </settings>
+</unattend>

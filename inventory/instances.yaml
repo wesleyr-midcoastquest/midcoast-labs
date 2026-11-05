@@ -1,0 +1,4 @@
+# Instance ledger. WRITTEN BY THE PIPELINE; do not edit by hand.
+# A new site starts empty; commit it after every pipeline run.
+instances: []
+templates: []

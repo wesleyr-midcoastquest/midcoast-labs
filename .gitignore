@@ -1,0 +1,13 @@
+# Secrets and state never live in the repo
+*.kdbx
+*.tfstate
+*.tfstate.*
+*.pkrvars.hcl
+.terraform/
+.terraform.lock.hcl.bak
+packer_cache/
+crash.log
+
+# Generated
+inventory/resolved/
+out/

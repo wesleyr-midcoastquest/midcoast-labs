@@ -1,0 +1,82 @@
+# MidCoast Lab SITE settings: everything that differs from one installation to
+# the next. Everything else (roles, sizes, OUs, tiering, groups, accounts,
+# naming, validation) is the product design in lab.yaml and stays the same at
+# every site.
+#
+# The pipeline merges the two (Resolve-LabInventory) into one resolved
+# inventory, which Terraform, Packer and every guest read. Edit this file, not
+# the resolved copy.
+#
+# This copy is an EXAMPLE site with sample values (example.com is reserved for
+# documentation). It validates, so you can generate a sample site kit, but it
+# is not a real installation. A new site replaces it from site.template.yaml;
+# see docs/NEW-SITE.md.
+
+site:
+  name: example-lab                 # free text: shown in logs and the site kit
+  time_zone: Eastern Standard Time  # Windows time zone ID (tzutil /l)
+
+identity:
+  active_directory:
+    # Use a subdomain of a domain you own; never .local or a single label.
+    domain: ad.example.com
+    netbios: EXAMPLE                # 15 characters or fewer, no dots
+  entra:
+    tenant_domain: example.com      # verified custom domain in your Microsoft 365 / Entra tenant; becomes the UPN suffix
+  # Each administrator gets <username> (in People) and <username>-a (in their tier).
+  administrators:
+    - username: jdoe
+      given_name: Jane
+      surname: Doe
+      tier: 0
+      groups:
+        - SG-ROLE-DomainAdmins
+
+network:
+  # A /24 nothing else uses: not your home LAN, not another MidCoast lab you
+  # may connect to. Lab hosts sit at fixed host numbers inside it (.10-.49).
+  subnet: 10.50.10.0/24
+  gateway: 10.50.10.1               # router on the lab bridge; serves DHCP from .50 up
+  dns_forwarders:                   # upstream DNS for the DCs
+    - 10.50.10.1
+  ntp:                              # external time source for the PDC emulator
+    - pool.ntp.org
+  # Optional: networks besides the lab subnet allowed to Remote Desktop to MGMT,
+  # e.g. your workstation's LAN. Keep it narrow: MGMT is a Tier 0 machine.
+  remote_desktop_from:
+    - 192.168.20.0/24
+
+
+# Optional: join every lab machine (DCs, MGMT, the rest) to your tailnet, with
+# Remote Desktop over Tailscale. Make a reusable, tagged (e.g. tag:midcoast-lab)
+# auth key, and NOT ephemeral (leave "Ephemeral" off: an ephemeral device drops off
+# the tailnet when offline and can't rejoin). It goes in the vault (Initialize-LabVault
+# asks for it), never in this file. Auth keys expire (90 days at most): replace it in the vault
+# before the next build when it does.
+tailscale:
+  enabled: false
+
+proxmox:
+  cluster: proxmox                  # cluster name (informational)
+  node: pve01
+  endpoint: https://pve01:8006/     # name or IP MGMT can reach
+  insecure_tls: true                # self-signed PVE certificate
+  bridge: vmbr1                     # the lab's network bridge
+  storage:
+    templates: local-lvm
+    virtual_machines: local-lvm
+    iso_repository: local
+  # Lab VMIDs are vmid_base + an offset from lab.yaml:
+  #   +0..+99 servers (DC slots +0..+2, ADES +10, MGMT slots +20..+21, W11 +40)
+  #   +100..+149 templates (+100..+123 WIN2022 versions, +124..+147 WIN11
+  #   versions, +148/+149 build staging)
+  # Choose a base whose 150-ID block is free on your cluster.
+  vmid_base: 100
+  # Linked clones (the default) need LVM-thin, ZFS or Ceph RBD, with templates
+  # and VMs on the same storage. Otherwise: clone_mode: full
+  # clone_mode: full
+
+isos:                               # file names on the iso_repository storage
+  windows_server_2022: local:iso/Server2022_Eval_x64.iso
+  windows_11: local:iso/Win11_Enterprise_Eval_x64.iso
+  virtio: local:iso/virtio-win.iso

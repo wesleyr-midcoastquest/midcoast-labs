@@ -1,0 +1,81 @@
+# MidCoast Lab SITE settings: template for a new installation.
+#
+# Copy to inventory/site.yaml and replace every <placeholder>, angle brackets
+# included: `domain: <ad.your-domain>` becomes `domain: ad.example.com`. Validation
+# (./orchestration/Test-LabInventory.ps1) refuses to run while any remain.
+# Only these settings differ between sites; everything in lab.yaml stays the
+# same everywhere. Full walkthrough: docs/NEW-SITE.md.
+
+site:
+  name: <short-site-name>           # free text, e.g. "jdoe-lab": shown in logs and the site kit
+  time_zone: <Windows-time-zone-ID> # e.g. "Eastern Standard Time", or UTC for a team in several time zones (list: tzutil /l)
+
+identity:
+  active_directory:
+    # A subdomain of a domain YOU own, e.g. ad.example.com. Never .local,
+    # never a single label. The forest name is permanent.
+    domain: <ad.your-domain>
+    netbios: <NETBIOS>              # 15 characters or fewer, no dots, e.g. EXAMPLE
+  entra:
+    # The custom domain verified in your Microsoft 365 / Entra tenant
+    # (e.g. example.com). It becomes every user's UPN suffix.
+    tenant_domain: <your-domain>
+  # Each administrator gets <username> (standard, in People) and
+  # <username>-a (admin, in Admin/Tier<tier>/Accounts). Tier 0 admins
+  # join SG-ROLE-DomainAdmins.
+  administrators:
+    - username: <username>          # 18 characters or fewer (the -a account must fit 20)
+      given_name: <Given>
+      surname: <Surname>
+      tier: 0
+      groups:
+        - SG-ROLE-DomainAdmins
+
+network:
+  # A /24 nothing else uses: not your home LAN, and not another MidCoast
+  # lab you may connect to (shared tailnet, VPN). Lab hosts sit at fixed
+  # host numbers .10-.49 inside it.
+  subnet: <a.b.c.0/24>
+  gateway: <a.b.c.1>                # router on the lab bridge (outside .10-.49, usually .1); DHCP only outside .10-.49
+  dns_forwarders:                   # upstream DNS for the DCs (often the gateway)
+    - <a.b.c.1>
+  ntp:
+    - pool.ntp.org
+  # Optional: networks besides the lab subnet allowed to Remote Desktop to MGMT,
+  # e.g. your workstation's LAN, or one admin address. Keep it narrow: MGMT is a
+  # Tier 0 machine, and a shared range such as 100.64.0.0/10 (Tailscale's) isn't
+  # only your devices. Leave it out to allow only the lab subnet.
+  # remote_desktop_from:
+  #   - <a.b.c.0/24>
+
+
+# Optional: join every lab machine (DCs, MGMT, the rest) to your tailnet, with
+# Remote Desktop over Tailscale. Make a reusable, tagged (e.g. tag:midcoast-lab)
+# auth key, and NOT ephemeral (leave "Ephemeral" off: an ephemeral device drops off
+# the tailnet when offline and can't rejoin). It goes in the vault (Initialize-LabVault
+# asks for it), never in this file. Auth keys expire (90 days at most): replace it in the vault
+# before the next build when it does.
+tailscale:
+  enabled: false
+
+proxmox:
+  cluster: <cluster-name>           # informational
+  node: <node-name>                 # the node the lab runs on (pvecm nodes / hostname)
+  endpoint: https://<proxmox-host>:8006/
+  insecure_tls: true                # true for the default self-signed certificate
+  bridge: <vmbr-name>               # the lab's bridge, e.g. vmbr2
+  storage:
+    # templates and virtual_machines: the same storage, of type LVM-thin, ZFS or
+    # Ceph RBD, for linked clones (the default). Otherwise set clone_mode: full.
+    templates: <storage>            # e.g. local-lvm or local-zfs (must hold disk images)
+    virtual_machines: <storage>
+    iso_repository: <storage>       # e.g. local (must hold ISO images)
+  # Lab VMIDs are vmid_base + an offset: +0..+99 servers, +100..+149 templates.
+  # Choose a base whose 150-ID block is free on your cluster, e.g. 3000.
+  vmid_base: <number>
+  # clone_mode: full                # only if your storage can't do linked clones
+
+isos:                               # on the iso_repository storage
+  windows_server_2022: <storage>:iso/<Server-2022-eval>.iso
+  windows_11: <storage>:iso/<Windows-11-Enterprise-eval>.iso
+  virtio: <storage>:iso/virtio-win.iso

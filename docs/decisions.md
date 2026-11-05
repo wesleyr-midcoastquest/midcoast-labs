@@ -1,0 +1,469 @@
+# Decisions
+
+Changes from the original architecture document and inventory (both v1.0), and the
+design choices behind the implementation. `docs/architecture.md` (v1.3) already
+reflects these changes. Addresses and VMIDs below are the example site's
+(`10.50.10.0/24`, `vmid_base: 100`); other sites have the same host numbers and
+offsets on their own subnet and base. Inventory changes are marked `CHANGED` or
+`ADDED` in `inventory/lab.yaml`.
+
+## Design decisions (Oct 2026)
+
+| Topic | Decision | Why |
+|---|---|---|
+| Who builds the first pieces | **MGMT-00 is hand-built once** and runs the pipeline until the first MGMT rotation replaces it | Something must exist before any template can be built; MGMT-00 joins the domain after Phase 1 |
+| DC addressing | **Three-slot pool** (A/B/C = VMIDs 100–102, .10–.12), two active | During a rotation the old and new DC overlap, so they can't share an IP or VMID |
+| Hostnames | **`<Role>-<YYMMDD>-<Sequence>`** (two-digit year), e.g. `DC-261023-00`, `ADES-261023-00` | Windows computer names are limited to 15 characters. With a four-digit year, ADES and MGMT names would be 16; with two digits the longest is 14 |
+| First-boot network | **Router DHCP on the lab bridge**, then bootstrap sets the static IP | Avoids depending on Proxmox's cloud-init network data for Windows |
+| AD domain name | **A subdomain of a domain the site owns** (example site: `ad.example.com`, NetBIOS `EXAMPLE`; was `midcoast.local`) | The forest is the one thing rotation never rebuilds, so its name has to be right before Phase 1. `.local` collides with multicast DNS (Bonjour/Avahi) and can't carry publicly trusted certificates; a subdomain of a domain the site owns avoids both |
+| Lab subnet | **A dedicated /24** (example site: `10.50.10.0/24`; was `192.168.1.0/24`), same host numbers | `192.168.1.0/24` is the default on many home routers; managing the lab over Tailscale from such a network would route to the wrong place. `10.42.0.0/16` was avoided too (k3s default pod network) |
+| Administrative tiering | **Tiered OU structure and per-object tiers now; enforcement later** | Retrofitting tiers means moving objects and re-linking GPOs, delegation and LAPS. Recording the tiers costs nothing before anything is built |
+| Configuration management | **No PowerShell DSC for now**; idempotent PowerShell scripts | See "PowerShell DSC" below |
+| Replacing MGMT | **Pipeline replaces MGMT after the first hand-build**: two-slot pool (A/B = VMIDs 120–121, .30–.31), handover in stages | Removes the last hand-maintained machine (and its 90-day evaluation clock) from outside the pipeline |
+| VM sizing | **DCs 4 GB / 50 GB, ADES 6 GB** (were 8 GB / 80 GB, 8 GB) | A lab directory with a handful of objects is comfortable in 4 GB; Phase 1 peak RAM drops from 32 GB to 24 GB |
+| Memory ballooning | **On**, with a per-role floor (`memory_min_mb`) | Proxmox can reclaim memory from idle VMs when the host runs short. A cushion only: the host is still sized for the maximum |
+| Clones | **Linked clones of versioned templates** (`clone_mode: linked`; a site can set `full`) | Each VM stores only its changes from the template, roughly halving disk use. Proxmox can't delete a template that has linked clones, so every build makes a new template version instead of replacing the old one |
+| Server Core for DCs | **Deferred** | Would save about 0.5–1 GB RAM and a few GB of disk per DC and suits remotely managed DCs, but needs a second Server 2022 template (ADES must stay on Desktop Experience for Entra Connect). Revisit later |
+| Portability | **Product / site split**: `lab.yaml` is the same at every site, `site.yaml` holds what differs; addresses are host numbers and VMIDs are offsets from a site `vmid_base` | So the repo can be handed to another engineer with their own Proxmox, domain and tenant, and every site stays the same lab |
+
+## Inventory changes (v1.0 → v1.1)
+
+- **DCs**: two fixed entries → one `DC` role with `instances: 2` and `slots`.
+  `fsmo_owner` removed: the first DC creates the forest and holds FSMO; rotation moves FSMO.
+- **`network.dns.primary/secondary` removed**: lab DNS servers are the active DCs' addresses.
+- **Network**: `192.168.1.0/24` → a dedicated /24 (example site `10.50.10.0/24`); every address keeps its host number
+  (DCs `.10–.12`, ADES `.20`, MGMT `.30–.31`, W11 `.40`, gateway `.1`). The gateway on
+  the lab bridge has to be moved to the new subnet by hand. Validation warns about subnets that
+  commonly collide (default home-router ranges, Docker, k3s).
+- **Tiering**: `Admin/Users` and `Admin/Groups` became `Admin/Tier0|1|2` with `Accounts`,
+  `Groups` and `ServiceAccounts` (plus `Servers` and `Devices` in Tier 0). The top-level
+  `ServiceAccounts` OU and the unused `Servers/DomainControllers` OU were removed. New:
+  `tiering` (tiers, and the tier of each computer OU), `tier` on every administrator,
+  service account, group and server role, and `groups` on administrators (replacing the
+  hard-coded Domain Admins membership). `groups.administrative` entries became
+  `{name, tier}`. Placement: ADES → `Admin/Tier0/Servers`, MGMT → `Admin/Tier0/Devices`.
+- **`identity.active_directory.domain`**: `midcoast.local` → a subdomain of the site's own domain (example site `ad.example.com`). Inventory
+  validation now rejects single-label and `.local` domain names. Users still sign in as
+  `@<tenant domain>` (e.g. `@example.com`); the forest gets that as a UPN suffix. Keep the `ad.` subdomain out of
+  public DNS (it lives only on the DCs), so internal and external DNS never overlap.
+- **Added**: `naming`, `environment.time_zone`, `network.static_range`, `network.dhcp`,
+  `network.ntp`, `proxmox.node` / `endpoint` / `insecure_tls`, a separate Packer token,
+  template `build` settings, AD forest/domain mode, site, DNS forwarders, LAPS settings,
+  administrators, service accounts, group nesting, computer placement, secret names,
+  `terraform.state.path`.
+- **Phases** list roles instead of systems (DCs are slot-based, so names change).
+- **MGMT**: the fixed entry became a two-slot pool (A/B = VMIDs 120–121, `.30`–`.31`)
+  with `instances: 1`. An `initial` block describes the hand-built MGMT-00 (slot A,
+  `origin: manual`), and `handover` and `software_versions` were added. The Windows 11
+  template gained a `build` section.
+- **`build_date: dynamic`** is kept. Each instance's date is assigned once and pinned in
+  `inventory/instances.yaml`, so names stay stable across Terraform runs. The
+  architecture's "hostnames are generated rather than stored" holds in spirit: the
+  ledger records the generated name together with the date, sequence and slot it was
+  derived from, and inventory validation checks every recorded name against that
+  derivation.
+
+## Inventory changes (v1.1 → v1.2): product and site
+
+- **`inventory/site.yaml`** (new) holds everything that differs between installations:
+  site name and time zone, AD domain and NetBIOS name, Entra tenant domain,
+  administrators, subnet, gateway, DNS forwarders, NTP, Proxmox cluster/node/endpoint/TLS,
+  bridge, storages, `vmid_base`, ISO names. `site.template.yaml` is the blank copy.
+- **`inventory/lab.yaml`** keeps only the product. Validation refuses site keys in it,
+  and product keys in `site.yaml`.
+- **Addresses are host numbers**: every server and slot has `host` (DC slots 10/11/12,
+  ADES 20, MGMT slots 30/31, W11 40) and the lab range is `start_host: 10`–`end_host: 49`.
+  The full address is the site subnet plus the host number.
+- **VMIDs are offsets**: `vmid_offset` on servers and slots (0–99) and templates
+  (100–149, staging VMs 148–149), added to the site's `vmid_base`. The example site
+  uses base 100, so its VMIDs are unchanged.
+- **Resolved inventory**: `Resolve-LabInventory` merges the two into the same shape as
+  before (full `ipv4` and `vmid` everywhere). The orchestration writes it to
+  `inventory/resolved/inventory.json` (gitignored) for Terraform and Packer; guests get
+  it as `inventory.json` in their payload, as before. For the example site every
+  v1.1 value resolves unchanged (the resolved file only adds `site`, `vmid_base` and the
+  `host` / `vmid_offset` keys it was computed from), apart from the version number.
+- **Subnet is exactly a /24** network address (host numbers are the last octet; the
+  reverse DNS zone is the three-octet zone).
+- **New checks**: offline (`Test-LabInventory.ps1`): placeholders left in `site.yaml`,
+  /24 network address, gateway inside the subnet but outside the lab range,
+  `vmid_base` ≥ 100, ISOs on the ISO storage, a Windows (not IANA) time zone ID, a
+  site name usable as a folder name, and a ledger that doesn't fit the
+  site (an inherited `instances.yaml`). Live (`Test-LabSite.ps1`, run by every pipeline
+  entry point): node, storages and their content types, bridge, ISOs, pool, **every lab
+  VMID free or already the lab's**, and **nothing outside the lab answering on a lab
+  address**. Root-side (`proxmox-setup.sh check`): the same Proxmox checks with a view of
+  every VM on the cluster, before anything is created. The hand-built MGMT-00 counts as
+  the lab's by VMID and name, before it is tagged or in the ledger.
+- **Site kit**: `setup/New-LabSiteKit.ps1` turns the runbook template (`docs/mgmt-00.md`,
+  `{{token}}` placeholders) and the Proxmox setup script into a filled-in
+  `out/site-kit/<site>/`. `proxmox-setup.sh` replaces `New-ProvisioningAccount.sh` and
+  also creates the MGMT-00 VM, so the first build has no hand-typed site values.
+- **Fixed product names**: the pool (`MidCoast-Lab`), role, `terraform-prov@pve`, vault
+  name and `midcoast-lab` tag are the same at every site. One lab per Proxmox cluster.
+
+## Inventory changes (v1.2 → v1.3): sizing, ballooning, linked clones
+
+- **Sizes**: DC `memory_mb` 8192 → 4096 and `disk_gb` 80 → 50; ADES `memory_mb`
+  8192 → 6144.
+- **`memory_min_mb`** (new, per role): ballooning floor. DC 2048, ADES 4096, MGMT 4096,
+  W11 2048. Validation: at least 1024 and not above `memory_mb`.
+- **`proxmox.clone_mode`** (new): `linked` in lab.yaml; a site may set `full` in
+  site.yaml. Validation requires `storage.templates` = `storage.virtual_machines` for
+  linked clones; the live pre-flight and `proxmox-setup.sh check` require the storage
+  type to be LVM-thin, ZFS or RBD.
+- **Templates**: `vmid_offset` → `vmid_offsets: { first, last }` (WIN2022 100–123,
+  WIN11 124–147); the resolved inventory has `vmid_first` / `vmid_last`. Staging VMIDs
+  are unchanged (+148, +149).
+- **Ledger**: new `templates:` list; instances gain `template_vmid` and `clone_mode`. Validation checks
+  every pipeline-built instance is pinned to a listed version of its role's family, one
+  current version per family, and template VMIDs inside their family's range.
+- **Validation**: new `MEM-001` (balloon service running, Low).
+- **OU `Users` → `People`**, with `placement.standard_users: People`. A top-level OU
+  can't be named `Users`: the domain root already has the built-in `CN=Users` container,
+  and AD requires names to be unique under a parent whatever the object type (found by
+  the first real Phase 1 run). Validation now rejects top-level OUs named after any
+  built-in root container.
+
+## Design choices
+
+**Instance ledger (`inventory/instances.yaml`).** `lab.yaml` is the design; the ledger
+records what exists. The pipeline writes it and you commit it, so git history is the
+build history. Terraform reads both files and nothing else.
+
+**Push the payload, not cloud-init user-data.** Cloudbase-Init does metadata processing
+(hostname), host configuration (extend C:) and bootstrap launch (a LocalScripts step that
+opens WinRM/HTTPS to the MGMT slot addresses only). The orchestrator then pushes the platform, metadata
+and that role's secrets over WinRM/HTTPS and starts `bootstrap.ps1`. Putting the payload
+in user-data would have meant Proxmox snippets, which bpg/proxmox can only upload over
+SSH, which would need a Linux account on the Proxmox node beyond `terraform-prov@pve`. It would
+also have left secrets on Proxmox disks.
+
+**Secrets.** KeePass is the source (SecretManagement vault on the active MGMT). Each guest gets
+only its role's secrets, stored with DPAPI (machine scope) in a folder only SYSTEM and
+Administrators can read. They are wiped when bootstrap finishes. The forest root's local
+Administrator becomes the domain Administrator, so bootstrap sets its password from
+KeePass before promotion.
+
+**Windows PowerShell 5.1 inside guests.** AD DS deployment, DNS, Group Policy and LAPS
+cmdlets are native to 5.1. PowerShell 7 is in the templates, as the architecture
+requires, and the orchestrator on MGMT runs on it.
+
+**Security context on DCs.** Bootstrap runs as SYSTEM. On a DC that is the DC's computer
+account, which can't extend the schema, create GPOs or run dsacls. Domain configuration
+therefore runs as the domain Administrator in a one-shot scheduled task. That is a real
+logon with full network credentials, so SYSVOL writes and Kerberos work without the
+limits of a remoting session. Validation runs as SYSTEM, so checks that reach the partner
+DC never hit the remoting double hop. Pipeline accounts (`svc-*`, built-in Administrator)
+don't expire, since they live in KeePass; human `-a` accounts follow domain policy.
+
+**DSRM passwords** start as the KeePass value, then Windows LAPS rotates them and backs
+them up to each DC's computer object (`Get-LapsADPassword -Identity <DC> -AsPlainText`).
+After the first rotation, the KeePass DSRM entry is only the seed for new DCs.
+
+**Validation catalog.** Checks report pass/fail only. `platform/validation/catalog.psd1`
+maps each ID to its severity and recovery action (`REPL-001 → RebuildDC`), as in the
+doc's rollback framework.
+
+**Templates are versioned, not overwritten** (v1.3; v1.1–1.2 swapped one template in
+place). Packer builds at a staging VMID (`+149` for WIN2022-TEMPLATE, `+148` for
+WIN11-TEMPLATE). Only on success is the staging VM full-cloned to the next free VMID in
+the template's range as `<family>-<YYMMDD>-<NN>`, which becomes the current version; the
+previous version is marked superseded. A failed build never leaves you without a
+template. See "Linked clones and template versions" below.
+
+**Least privilege on Proxmox.** `terraform-prov@pve` gets a custom role on the pool, the
+two storages and the lab bridge only, plus read-only on the node, and is reached by
+API tokens (separate ones for Terraform and Packer). No root, no SSH.
+
+**DCs stay in the built-in Domain Controllers OU**, where the Default Domain Controllers
+Policy is linked. That's why the `Servers/DomainControllers` OU from v1.0 was removed.
+
+**Snapshots.** Kept as a recovery method for whole-lab rollback only. A single DC is
+never restored from a snapshot; it is rebuilt by rotation.
+
+**Terraform state on the active MGMT**, outside the repo (`C:\MidCoastLab\state`). Back it
+up. Losing it isn't fatal, since the VMs can be imported, but it's tedious. A MGMT rotation
+copies it to the new MGMT. There is no `backend` block: `Invoke-LabTerraform` passes the
+path with `-state`, so the state file never lands in the repo working tree and the
+location comes from inventory. `CentralTerraformState` remains deferred; it will add a
+remote backend.
+
+## Linked clones and template versions
+
+Since v1.3, Terraform creates every VM as a **linked clone** of a template: the VM's disk
+is a thin snapshot of the template's, so it stores only what differs. Two DCs cost about
+one template plus a few GB each, instead of two full copies.
+
+A template with linked clones can't be deleted (Proxmox refuses, and the clones would
+lose their base). So templates are **versioned**:
+
+- Each template family has a VMID range (`vmid_offsets` in lab.yaml): WIN2022-TEMPLATE
+  `+100`…`+123`, WIN11-TEMPLATE `+124`…`+147`. Each build takes the next free VMID there.
+- The ledger (`instances.yaml`) has a `templates:` list: name, family, VMID, build date,
+  and `current` or `superseded`. One version per family is current.
+- Every instance records `template_vmid`, the version it was cloned from, when it is
+  allocated. Terraform clones from that, so building a new version never changes an
+  existing VM; only new VMs (the next rotation) get it.
+- `Remove-LabUnusedTemplates` deletes superseded versions that no instance uses any
+  more. It runs before and after each template build and after a MGMT rotation. It
+  never deletes the current version, re-checks the VM's name and tag first, and keeps
+  the version if Proxmox refuses.
+- The range holds 24 versions per family. That only fills if VMs are never rotated off
+  old versions; the build then stops and says so.
+
+**Trade-offs.** With the lab's raw disks, linked clones need LVM-thin, ZFS or Ceph RBD
+(directory or NFS storage could only do them with qcow2 disks), with the templates and VMs
+on the same storage. On node-local storage (`local-lvm`, `local-zfs`), Proxmox can't
+migrate a linked clone, so the lab's VMs and their template versions stay on
+`proxmox.node`: node maintenance means shutting the lab down (Ceph RBD avoids this). The
+clone mode is recorded per instance in the ledger (`clone_mode`), so changing
+`proxmox.clone_mode` later only affects VMs built after the change; existing ones change
+over as they rotate. Validation checks both and points to `proxmox.clone_mode: full` in
+site.yaml for storage that can't do it (full clones work exactly as before, with the
+same versioning). A linked clone depends on its template's disk, so losing the template
+loses its clones; with rebuild-over-repair that is recovered by rebuilding the template
+and rotating, but it's another reason to back up the VM storage.
+
+**Ballooning.** Each role has `memory_mb` (maximum) and `memory_min_mb` (floor). The
+templates install and enable the VirtIO balloon service (`build-bootstrap.ps1` checks
+for it), and `MEM-001` (Low) reports it in each validation run. Proxmox only balloons
+when the host passes about 80% memory use.
+
+## Guest identity
+
+Found in the first real Phase 1: both new DCs reported the same DHCP address, and the
+orchestrator pushed DC-00's setup to whichever machine answered there, which was VM 1001.
+It now never trusts an address alone:
+
+- **MAC check.** A WinRM session is only used if the guest has the VM's MAC address, read
+  from the VM's Proxmox config. Another machine on the same address is ignored, with a
+  warning.
+- **Addresses from the guest agent.** Each attempt asks the VM's QEMU guest agent for its
+  current IPv4 addresses, as well as the static address and Terraform's report.
+- **Metadata check.** A guest that already has lab metadata must have been set up as this
+  instance (hostname and VMID); otherwise the run stops instead of following another
+  instance's bootstrap.
+
+**Likely root cause: a cached DHCP lease in the template.** Sysprep keeps the build VM's
+lease, so each clone first asks to keep that address; a non-authoritative DHCP server
+(dnsmasq's default) stays silent and Windows keeps it. The template now deletes the
+cached lease before sysprep, and the lab's DHCP server should be set authoritative.
+
+A run that already reached the wrong machine is recovered by rebuild: delete both VMs,
+remove their ledger entries, and run the phase again.
+
+## Administrative tiering
+
+Tier 0 is everything that controls identity: the DCs, Entra Connect (ADES, which can write
+to the directory and holds sync credentials), MGMT (it holds the pipeline's credentials and
+can rebuild any DC), and the accounts and groups that administer them. Tier 1 is member
+servers; Tier 2 is workstations and end users.
+
+**What's implemented now:** the OUs, each object created in its tier's OU, and validation
+that keeps the model consistent:
+- a role's placement OU must be in the role's tier,
+- membership never crosses tiers,
+- every tier has its Accounts and Groups OUs,
+- the domain-join account, which can create objects in Tier 0 OUs, must be Tier 0.
+
+Domain-join delegation and the LAPS policy are applied to every computer OU (derived from
+inventory), so new tiers and placements pick them up automatically.
+
+**What's deferred** (`MultiTierAdministration`, `tiering.enforced: false`): stopping
+higher-tier accounts from signing in to lower-tier machines, through Group Policy user
+rights ("Deny log on…") or authentication policy silos, plus Protected Users for Tier 0
+admins. That last one is deliberately not on yet: Protected Users blocks NTLM, and the
+pipeline and Remote Desktop by IP rely on it until AD CS provides certificates for Kerberos
+by name. Enforcing tiers later becomes a matter of GPOs linked to OUs that already exist.
+
+**MGMT is Tier 0**, so it's treated as a privileged admin workstation: only Tier 0 admins
+should sign in to it, and it shouldn't be used for browsing or email.
+
+## PowerShell DSC
+
+Desired State Configuration isn't used, and isn't needed with this design. Its main job
+is to keep long-lived machines in their declared state, re-applying configuration
+when they drift (`ApplyAndAutoCorrect`). That's repair. MidCoast Lab replaces rather
+than repairs: every machine is built from source, validated, and rebuilt when it's
+unhealthy or its evaluation runs out, so no machine lives long enough to drift far. The
+role scripts are idempotent, so they get the property DSC is usually chosen for without
+its overhead:
+
+- **Credentials.** Compiled configurations must encrypt credentials with a per-node
+  certificate (AD CS is deferred), or allow plain text. The pipeline instead pushes
+  secrets over WinRM/HTTPS, keeps them in DPAPI, and wipes them when bootstrap finishes.
+- **The hard parts aren't declarative.** Forest creation, promotion order, FSMO moves,
+  demotion and the MGMT handover are sequences with checks between steps. They would stay
+  scripts even with DSC.
+
+**It may be added later**, and adding it is cheap because of the same design. A DSC
+module goes into `platform/` (and its resources into the templates), and every machine
+picks it up at its next rotation, with no retrofitting of running servers. The likely
+fit is **drift detection, not correction**: a configuration in `ApplyAndMonitor` mode,
+generated from `lab.yaml`, whose findings feed the validation catalog, so drift becomes
+a severity that triggers a rebuild. `ActiveDirectoryDsc` resources map closely onto
+`Lab.AD`, and the newer DSC v3 (no LCM, YAML/JSON documents) suits an inventory-driven
+design. Check its AD resource coverage before choosing it.
+
+## MGMT replacement
+
+**Why a handover, not a rebuild.** MGMT holds the pipeline's state: the repo, the Terraform
+state, the vault. It can't destroy itself and start over, so the old MGMT builds the new
+one and hands over (Prepare), and the new one retires the old (Complete). Abort works
+until the old VM is destroyed.
+
+**Why a slot pool.** Every guest's WinRM firewall is baked in at template build time with
+the MGMT addresses it trusts. A single address would lock a replacement out of every
+existing machine, so the templates trust both MGMT slot addresses.
+
+**Hand-built MGMT-00 in the ledger.** `servers[MGMT].initial` describes it (slot A,
+`origin: manual`). The pipeline records it in the ledger the first time it runs.
+Terraform skips `origin: manual` entries, and Complete deletes such a VM through the
+Proxmox API instead.
+
+**One toolchain installer.** `platform/roles/mgmt-tools.ps1` is used by both the
+hand-build and the MGMT role. It downloads directly from vendors rather than using winget,
+which isn't reliably available to SYSTEM. HashiCorp binaries are checked against their
+published SHA256SUMS.
+
+**The lock.** After handover the old MGMT writes `C:\MidCoastLab\HANDOVER.lock`.
+Terraform applies, template builds and phases all refuse to run while it exists, so the
+two machines can't both change the lab with diverging state.
+
+**Terraform guard.** Every `apply` is a saved plan that is inspected first. It is
+refused if it would delete, delete-and-recreate, or remove a disk, EFI disk or TPM from
+an instance the ledger marks active, or from the machine running it. It fails closed: if
+the plan can't be read, nothing is applied. That protects the DCs from provider drift too.
+
+**Handover folder ACL.** `C:\MidCoastLab` on a pipeline-built MGMT grants SYSTEM,
+Administrators and `SG-ROLE-DomainAdmins`. The lab group is granted directly, because UAC
+strips Administrators from a non-elevated token but leaves custom groups alone.
+
+**Windows 11 template safeguards.** Store auto-updates are off during the build (per-user
+app updates break sysprep), and unprovisioned per-user packages are removed before
+sysprep. Automatic device encryption is disabled, or every clone would come up
+BitLocker-encrypted, since the template has a TPM. The built-in Administrator is
+re-enabled on first boot, because client SKUs disable it after sysprep.
+
+## DC rotation
+
+**Two stages with a checkpoint.** `Add` builds the replacement and moves everything onto
+it (FSMO roles, the PDC emulator's external time source, every DNS client in the lab);
+`Retire` demotes and destroys the old DC. Between them the old DC still runs as a third DC
+that nothing depends on, so the change can be checked before anything is removed, and
+`Abort` can still undo it. Same shape as the MGMT handover, for the same reason: the risky,
+irreversible step is separate and last.
+
+**Replace, never repair.** The new DC is a replica built from the current template, so
+every rotation also brings the DC onto the latest patched template and restarts its
+evaluation clock. The forest itself is never rebuilt.
+
+**Addresses move with the slot.** The new DC takes the free slot of three (`.10`–`.12`),
+so the lab's DNS servers change address with each rotation. The alternative, re-IPing the
+new DC onto the old one's address after demotion, adds a risky step (a DC's address is in
+DNS, replication metadata and every client's resolver cache) to save repointing clients,
+which the pipeline can do itself because the ledger lists every lab machine. Machines
+outside the lab that were pointed at a DC by hand are the exception; Add prints the new
+addresses.
+
+**Demote, don't delete.** A reachable DC is demoted (`Uninstall-ADDSDomainController`),
+which removes its own objects cleanly. Only a DC that can't be reached is handled with
+`-Force`: FSMO roles seized and `ntdsutil` metadata cleanup. After either, the leftover NS,
+domain, `gc` and partition A records and the computer object are removed.
+
+**Explicit credentials across the hop.** FSMO moves and demotion run in a remote session on
+a DC but must talk to another DC; the session's own credentials can't make that second hop,
+so the domain administrator credential is passed to those cmdlets explicitly.
+
+## Remote Desktop to the DCs
+
+DCs and MGMT turn on Remote Desktop (Network Level Authentication on) for the **lab
+subnet**. The DCs are managed from MGMT (RSAT, PowerShell remoting); Remote Desktop is for
+the cases a console session is simply quicker. The lab subnet holds only lab machines, so
+this doesn't open a DC to the home LAN or the tailnet. Who may sign in stays AD's default
+for DCs (Administrators). Checked by `RDP-001` (DCs) and `MGMT-007` (MGMT). WinRM stays
+MGMT-only, since that's the pipeline's way in.
+
+## Tailscale on every lab machine
+
+**Why.** A way into every machine that doesn't depend on the lab's router, the subnet
+route or MGMT. Optional per site (`tailscale.enabled`).
+
+**The key is a secret, so it lives in the vault**, not in `site.yaml`: `site.yaml` is in
+git and in every handover and zip. It reaches each guest with the other build secrets and
+is deleted when bootstrap ends. Use a reusable, tagged, non-ephemeral key (ephemeral
+devices drop off when a lab is shut down for a while, and don't come back by themselves).
+
+**Never the lab's DNS, never the lab's routes.** `--accept-dns=false`, or the tailnet's
+DNS settings can replace a domain member's DNS and break AD; `--accept-routes=false`, or
+the lab's own subnet route would pull lab traffic through the tailnet.
+
+**DCs stay single-homed as far as AD is concerned.** A DC registers every address it has
+in AD's DNS (its host name, the domain name, gc, the partition names), and members would
+then try to reach it on its Tailscale address. So, before the adapter gets an address:
+the adapter doesn't register in DNS, the DNS server publishes only the lab address in its
+own records (it still listens on every address: restricting it failed on the first real
+run, and would cut off the DC's own loopback lookups), and Netlogon skips the domain-name and gc A records
+(`DnsAvoidRegisterRecords LdapIpAddress GcIpAddress`), which the DC creates for its lab
+address itself as static records (the rotation's DNS cleanup removes them with the DC).
+Any Tailscale address that still appears is removed, and `DNS-005` checks for them.
+
+**Remote Desktop on the Tailscale adapter only.** Packets on that adapter can only come from
+the tailnet, so this doesn't open `100.64.0.0/10` from anywhere else; Tailscale's access
+rules decide which tailnet devices may connect. WinRM stays MGMT-only on the lab network.
+
+**The key stays on each machine, in Tailscale's AuthKey policy.** On Windows, a login made
+with `tailscale up --authkey --unattended` doesn't reliably survive a restart (a known,
+open Tailscale issue: the first DCs came back as "Needs authentication"). With the `AuthKey`
+system policy (`HKLM\SOFTWARE\Policies\Tailscale`), the service logs itself back in
+whenever it needs to. The trade-off is a reusable key at rest on every lab machine; the
+policy key is readable by SYSTEM and Administrators only, which on Tier 0 machines are the
+people who could add devices anyway. Limit what the key can do in Tailscale: tag it, and
+let the tag's access rules allow only what the lab needs (Remote Desktop in). The same
+policies fix `UnattendedMode`, `UseTailscaleDNSSettings` and `UseTailscaleSubnets`, so
+nothing, the tray app included, can switch DNS or routes back on. Retiring a machine
+removes the AuthKey policy before logging out.
+
+**And a watchdog, because the policy wasn't enough.** After the next round of Windows
+updates and restarts, DCs and MGMT were logged out anyway. So every machine also gets a
+SYSTEM task, `MidCoastLab-Tailscale`, at start-up and every 15 minutes: if `tailscale
+status` says it isn't logged in, it runs `tailscale up` with the key (DPAPI-encrypted for
+the machine, in a folder only SYSTEM and Administrators can read) and the lab's flags. It
+logs to `C:\ProgramData\MidCoastLab\Tailscale\watchdog.log`. Deterministic, and it doesn't
+depend on how a given Tailscale version treats unattended logins. Retiring a machine
+removes it first.
+
+**Best-effort.** The lab works without the tailnet, so a failed join (an expired key, no
+internet) is a warning (`TS-001`), not a failed build.
+
+## Terraform guard: deletes must be named
+
+Until v1.4 the guard refused deletes of instances the ledger called active. That trusted
+the ledger: an emptied or damaged `instances.yaml` would make every VM look unprotected,
+and a plan to destroy the DCs would pass. Now every apply names what it expects to
+destroy (`-AllowDelete`: the retiring MGMT, the retiring DC, an aborted replacement), and
+any other delete, any replace, or a delete of the machine running the pipeline refuses the
+whole plan.
+
+## Release names and the compatibility number
+
+The lab ships changes several times a day, so a hand-bumped `1.4` can't tell one build
+from the next. Every merged change is now a **release**, `LAB-<YYMMDD>-<NN>` (the same
+shape as machine and template names), tagged in git and recorded on every machine and
+template it builds. `version` stays, but only as a **compatibility** number: it moves when
+an existing lab has to do something beyond `git pull` (minor: rebuild templates or replace
+machines to get it; major: change `site.yaml`). A date can't carry that signal, and the
+next person updating a lab needs exactly that signal.
+
+## Known gaps
+
+- **Windows DHCP failover isn't in scope**, since the router serves DHCP. Make sure the
+  router's pool excludes `10.50.10.10–49`.
+- **Windows 11 evaluations last 90 days**, half the DCs' 180. Plan on rotating MGMT about
+  every two months; `EVAL-001` warns when fewer than 30 days remain.
+- **Templates must come from this version.** Guests trust the MGMT addresses baked in
+  at template build time; a template built before the slot pool would only trust `.30`,
+  and a replacement MGMT would fail `MGMT-005`. (Nothing has been built yet, so this only
+  matters if the inventory's MGMT slots change later: rebuild the templates, then rotate.)
+- **Rotation of DCs**: built in v1.4 (see 'DC rotation').

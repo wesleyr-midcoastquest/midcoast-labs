@@ -1,0 +1,524 @@
+# MidCoast Lab inventory: the PRODUCT design, the same at every site.
+#
+# Site-specific values (domain, tenant, admins, subnet, Proxmox node, storage,
+# bridge, VMID base, ISO names, time zone) live in inventory/site.yaml. The
+# pipeline merges the two into one resolved inventory (Resolve-LabInventory);
+# addresses here are host numbers in the site's subnet, and VMIDs are offsets
+# from the site's vmid_base.
+#
+# Lines marked "CHANGED" or "ADDED" differ from inventory v1.0; the reasons
+# are in docs/decisions.md.
+#
+# This file is the DESIGN. Which machines exist right now (their build
+# dates, sequences and DC/MGMT slots) lives in inventory/instances.yaml, a ledger
+# the pipeline writes. Never hand-edit the ledger.
+
+version: "1.4"                                   # CHANGED: 1.3 -> 1.4 (fixes from the first real build)
+                                                 # Compatibility number; changes rarely (see CHANGELOG.md).
+release: LAB-261105-01                           # ADDED: release name, LAB-<YYMMDD>-<NN>; every merged change gets a new one
+
+environment:
+  name: MidCoast-Lab
+  description: >
+    Hybrid Identity demonstration environment
+    built using Terraform, Packer, PowerShell,
+    Active Directory, and Microsoft Entra.
+
+  build_date: dynamic        # assigned per instance at build time, then pinned in instances.yaml
+  # time_zone: from site.yaml
+
+naming:                                          # ADDED
+  # Windows computer names max out at 15 characters.
+  # <Role>-<YYMMDD>-<Sequence>, e.g. DC-261023-00, ADES-261023-00
+  format: "{role}-{yymmdd}-{sequence}"
+  max_length: 15
+
+identity:
+
+  active_directory:
+    # domain, netbios: from site.yaml
+    forest_mode: WinThreshold                    # ADDED: 2016 level, the highest Server 2022 supports
+    domain_mode: WinThreshold                    # ADDED
+    site: Default-First-Site-Name                # ADDED
+    # dns_forwarders: from site.yaml (network.dns_forwarders)
+    laps:                                        # ADDED: Windows LAPS (built into Server 2022 / Windows 11)
+      password_length: 20
+      password_age_days: 30
+      backup_dsrm_password: true                 # DCs back up their DSRM password to AD
+
+  entra: {}                                      # tenant_domain: from site.yaml
+
+  administrative_model:
+    account_suffix: "-a"
+    # administrators: from site.yaml (each gets <user> and <user>-a)
+
+  service_account_prefix: "svc-"
+
+  service_accounts:                              # ADDED
+    - name: svc-labdeploy
+      description: Pipeline account for DC promotion, demotion and FSMO moves
+      tier: 0
+      groups:
+        - SG-ROLE-DomainAdmins
+    - name: svc-domainjoin
+      description: Joins computers to the domain (delegated, not an admin)
+      tier: 0                                    # it can create objects in Tier 0 OUs, so it is Tier 0
+      delegation: domain_join
+
+network:
+
+  # bridge, subnet, gateway, ntp: from site.yaml
+
+  # CHANGED: dns.primary/secondary removed. With rotating DCs, lab DNS servers
+  # are always the addresses of the active DC instances (see the DC slots).
+
+  static_range:                                  # ADDED: host numbers; every lab address falls here,
+    start_host: 10                               # and the router's DHCP pool must NOT include it
+    end_host: 49
+
+  dhcp:                                          # ADDED
+    provider: router                             # the site gateway serves DHCP (pool .50 and up); new VMs
+                                                 # use it for first boot, then bootstrap sets the static IP
+
+proxmox:
+
+  # node, endpoint, insecure_tls, storage, vmid_base: from site.yaml
+
+  pool: MidCoast-Lab
+
+  # ADDED (1.3): VMs are linked clones of their template: each stores only its
+  # changes, so two DCs cost about one template plus a few GB each. Needs
+  # storage that supports linked clones (LVM-thin, ZFS, Ceph RBD), and the
+  # templates and VMs on the same storage. A site whose storage can't do this
+  # sets proxmox.clone_mode: full in site.yaml.
+  clone_mode: linked
+
+  service_account:
+
+    user: terraform-prov@pve
+    token_name: terraform
+    packer_token_name: packer                    # ADDED: separate token for template builds
+
+templates:
+
+  windows_server_2022:
+
+    # CHANGED (1.3): templates are versioned. Each build creates a new template
+    # VM (WIN2022-TEMPLATE-<YYMMDD>-<NN>) at the next free VMID in this range;
+    # VMs keep using the version they were cloned from, and a superseded version
+    # is deleted once no VM uses it. VMID = site vmid_base + offset.
+    vmid_offsets: { first: 100, last: 123 }
+
+    template_name: WIN2022-TEMPLATE
+
+    operating_system: Windows Server 2022
+
+    software:
+
+      - PowerShell7
+      - CloudbaseInit
+      - QemuGuestAgent
+
+    build:                                       # ADDED
+      staging_vmid_offset: 149                   # Packer builds here; cloned to a new version on success
+      # iso, virtio_iso: from site.yaml (isos)
+      image_index: 2                             # 2 = Standard (Desktop Experience); confirm with dism /Get-WimInfo
+      disk_gb: 40                                # clones grow to their role's disk_gb
+      driver_os: 2k22                            # VirtIO driver folder (vioscsi\2k22, NetKVM\2k22)
+      tpm: false
+      tag: win2022
+      software_versions:
+        powershell: latest                       # or pin, e.g. "7.4.6", for byte-identical rebuilds
+        cloudbase_init: stable                   # cloudbase.it stable channel
+
+  windows_11:
+
+    vmid_offsets: { first: 124, last: 147 }
+
+    template_name: WIN11-TEMPLATE
+
+    operating_system: Windows 11 Enterprise
+
+    software:
+
+      - PowerShell7
+      - CloudbaseInit
+      - QemuGuestAgent
+
+    build:                                       # ADDED
+      staging_vmid_offset: 148
+      image_index: 1                             # the Enterprise eval ISO usually has one image; confirm with dism
+      disk_gb: 64                                # Windows 11 minimum
+      driver_os: w11
+      tpm: true                                  # Windows 11 requires TPM 2.0 + Secure Boot
+      tag: win11
+      software_versions:
+        powershell: latest
+        cloudbase_init: stable
+
+servers:
+
+  # CHANGED: the two fixed DC entries became one DC role with a three-slot pool.
+  # Two slots are active; the third is where a rotation builds the replacement.
+  - role: DC
+
+    tier: 0                                      # ADDED
+
+    instances: 2
+
+    template: WIN2022-TEMPLATE
+
+    cpu: 4
+
+    memory_mb: 4096                              # CHANGED (1.3): 8192 -> 4096 (ample for a lab directory)
+
+    memory_min_mb: 2048                          # ADDED (1.3): ballooning floor: Proxmox can reclaim down to this when the host runs short
+
+    disk_gb: 50                                  # CHANGED (1.3): 80 -> 50
+
+    services:
+
+      - ActiveDirectory
+      - DNS
+      - GlobalCatalog
+
+    # CHANGED: fsmo_owner: true removed. The first DC built creates the forest
+    # and holds FSMO; a rotation moves FSMO off a retiring DC to its replacement.
+
+    slots:
+      - id: A
+        vmid_offset: 0
+        host: 10
+      - id: B
+        vmid_offset: 1
+        host: 11
+      - id: C
+        vmid_offset: 2
+        host: 12
+
+  - role: ADES
+
+    tier: 0                                      # ADDED
+
+    sequence: "00"
+
+    vmid_offset: 10
+
+    template: WIN2022-TEMPLATE
+
+    cpu: 4
+
+    memory_mb: 6144                              # CHANGED (1.3): 8192 -> 6144 (Entra Connect + its LocalDB)
+
+    memory_min_mb: 4096                          # ADDED (1.3)
+
+    disk_gb: 80
+
+    host: 20
+
+    services:
+
+      - EntraConnect
+
+  # CHANGED: fixed entry became a two-slot pool, so MGMT can be replaced by the
+  # pipeline. Every guest's WinRM firewall allows both slot addresses.
+  - role: MGMT
+
+    tier: 0                                      # ADDED
+
+    instances: 1
+
+    template: WIN11-TEMPLATE
+
+    # ADDED: the first MGMT is hand-built (it has to exist before any template).
+    # The pipeline registers it in the ledger; every later MGMT is pipeline-built.
+    initial:
+      origin: manual
+      hostname: MGMT-00
+      slot: A
+
+    cpu: 4
+
+    memory_mb: 8192
+
+    memory_min_mb: 4096                          # ADDED (1.3)
+
+    disk_gb: 100
+
+    slots:
+      - id: A
+        vmid_offset: 20
+        host: 30
+      - id: B
+        vmid_offset: 21
+        host: 31
+
+    services:
+
+      - Git
+      - Terraform
+      - Packer
+      - VSCode
+      - RSAT
+
+    # ADDED (1.4): RSAT tools. "standard" = what the lab uses (AD DS/LDS, DNS, Group
+    # Policy, Server Manager; under an hour). Add capability names for more, e.g.
+    # Rsat.Dhcp.Tools~~~~0.0.1.0. "all" installs every RSAT tool: 3+ hours per MGMT.
+    rsat:
+      - standard
+
+    # ADDED: toolchain versions ("latest" resolves at install time; pin for repeatability)
+    software_versions:
+      git: latest
+      terraform: latest
+      packer: latest
+      vscode: latest
+      keepassxc: latest
+
+    # ADDED: what a replacement MGMT inherits from the one it replaces
+    handover:
+      repo_path: C:\MidCoastLab\repo
+      vault_path: C:\MidCoastLab\MidCoastLab.kdbx
+      lock_path: C:\MidCoastLab\HANDOVER.lock
+
+  - role: W11
+
+    tier: 2                                      # ADDED
+
+    sequence: "00"
+
+    vmid_offset: 40
+
+    template: WIN11-TEMPLATE
+
+    cpu: 2
+
+    memory_mb: 4096
+
+    memory_min_mb: 2048                          # ADDED (1.3)
+
+    disk_gb: 80
+
+    host: 40
+
+    services:
+
+      - EndUserValidation
+
+# CHANGED: Admin is split by tier (see tiering:). Tier OUs hold that tier's
+# accounts, groups and service accounts; Tier 0 also holds its servers and admin
+# devices. Servers/DomainControllers removed: DCs stay in the built-in
+# "Domain Controllers" OU, where the Default Domain Controllers Policy is linked.
+organizational_units:
+
+  - Admin
+  - Admin/Tier0
+  - Admin/Tier0/Accounts
+  - Admin/Tier0/Groups
+  - Admin/Tier0/ServiceAccounts
+  - Admin/Tier0/Servers
+  - Admin/Tier0/Devices
+  - Admin/Tier1
+  - Admin/Tier1/Accounts
+  - Admin/Tier1/Groups
+  - Admin/Tier1/ServiceAccounts
+  - Admin/Tier2
+  - Admin/Tier2/Accounts
+  - Admin/Tier2/Groups
+
+  - Servers                     # Tier 1
+  - Servers/Infrastructure
+  - Servers/MemberServers
+
+  - Workstations                # Tier 2
+
+  - People                      # CHANGED (1.3): was "Users", which clashes with the
+                                # built-in CN=Users container (AD names must be unique
+                                # under a parent, whatever the object type)
+
+  - Groups
+
+  - Staging
+
+# ADDED: administrative tiering. The structure and the tier of every account,
+# group and machine are recorded now, so enforcement (logon restrictions,
+# authentication policy silos) can be added later without moving objects.
+tiering:
+  enforced: false               # MultiTierAdministration (future.deferred) turns this on
+  tiers:
+    - id: 0
+      ou: Admin/Tier0
+      description: Control of identity - DCs, Entra Connect (ADES), MGMT, and their admins
+    - id: 1
+      ou: Admin/Tier1
+      description: Member servers and the applications on them
+    - id: 2
+      ou: Admin/Tier2
+      description: Workstations and end users
+  # Tier of each computer OU (longest matching path wins).
+  computer_ous:
+    Domain Controllers: 0       # built-in
+    Admin/Tier0/Servers: 0
+    Admin/Tier0/Devices: 0
+    Servers: 1
+    Workstations: 2
+    Staging: 2                  # default landing zone (redircmp); pipeline joins go straight to their placement OU
+
+account_standards:
+
+  administrative:
+
+    suffix: "-a"
+
+  service:
+
+    prefix: "svc-"
+
+groups:
+
+  # CHANGED: each group records its tier; it is created in Admin/Tier<n>/Groups.
+  administrative:
+
+    - name: SG-ROLE-DomainAdmins
+      tier: 0
+    - name: SG-ROLE-ServerAdmins
+      tier: 1
+    - name: SG-ROLE-HelpDesk
+      tier: 2
+
+  nesting:                                       # ADDED
+    SG-ROLE-DomainAdmins:
+      - Domain Admins
+
+placement:                                       # ADDED: where new computer objects land
+  default_computers: Staging
+  standard_users: People                         # ADDED (1.3): standard (non-admin) accounts
+  roles:                        # CHANGED: Tier 0 roles live under Admin/Tier0
+    ADES: Admin/Tier0/Servers
+    MGMT: Admin/Tier0/Devices   # MGMT is a privileged admin workstation for Tier 0
+    W11: Workstations
+
+secrets:                                         # ADDED: names in the KeePass vault on the active MGMT
+  vault: MidCoastLab
+  entries:
+    local_administrator: MidCoast-LocalAdministrator    # template + clones until LAPS takes over
+    domain_administrator: MidCoast-DomainAdministrator  # built-in domain Administrator
+    dsrm: MidCoast-DSRM
+    proxmox_terraform_token: MidCoast-Proxmox-terraform
+    proxmox_packer_token: MidCoast-Proxmox-packer
+    tailscale_authkey: MidCoast-Tailscale-AuthKey      # ADDED (1.4): only when site.yaml tailscale.enabled
+  # Every account in identity.* is stored under its own name
+  # (<user>, <user>-a, svc-labdeploy, svc-domainjoin).
+
+deployment:
+
+  phases:
+
+    phase_1:
+
+      name: ActiveDirectory
+
+      roles:                                     # CHANGED: systems -> roles (DCs are slot-based)
+
+        - DC
+
+      validations:
+
+        - DNS
+        - SYSVOL
+        - FSMO
+        - Replication
+
+    phase_2:
+
+      name: Management
+
+      roles:
+
+        - MGMT
+        - W11
+
+      validations:
+
+        - DomainJoin
+        - Authentication
+        - PolicyProcessing
+
+    phase_3:
+
+      name: HybridIdentity
+
+      roles:
+
+        - ADES
+
+      validations:
+
+        - EntraConnectivity
+        - InitialSync
+        - DeltaSync
+
+validation:
+
+  severity:
+
+    critical:
+      stop_deployment: true
+      rollback_review: true
+
+    high:
+      stop_deployment: false
+
+    medium:
+      stop_deployment: false
+
+    low:
+      stop_deployment: false
+
+logging:
+
+  path: C:\ProgramData\MidCoastLab\Logs
+
+  retention_days: 90
+
+terraform:
+
+  provider: bpg/proxmox
+
+  state:
+
+    location: MGMT          # CHANGED: whichever MGMT instance is active (handed over on rotation)
+    path: C:\MidCoastLab\state\terraform.tfstate   # ADDED: outside the repo; back it up
+
+platform:
+
+  runtime_modules:
+
+    - Lab.Logging
+    - Lab.Metadata
+    - Lab.Inventory
+    - Lab.System
+    - Lab.Validation
+    - Lab.AD
+    - Lab.Entra
+
+recovery:
+
+  strategy:
+
+    preferred: rebuild
+
+  methods:
+
+    - snapshot      # whole-lab rollback only; never restore a single DC from a snapshot
+    - restore
+    - rebuild
+
+future:
+
+  deferred:
+
+    - ActiveDirectoryCertificateServices
+    - MultiTierAdministration
+    - VLANSegmentation
+    - CentralTerraformState

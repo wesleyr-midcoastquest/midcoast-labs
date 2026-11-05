@@ -1,0 +1,63 @@
+# Initialize-LabRemoting.ps1: Cloudbase-Init LocalScripts, runs as SYSTEM
+# on each clone's first boot (and is a no-op afterwards).
+#
+# Gives the clone its own WinRM/HTTPS identity and lets only MGMT in: every
+# MGMT slot address, so a replacement MGMT can manage the lab too.
+# The orchestrator then pushes the platform and starts bootstrap.ps1.
+# The addresses are rendered from inventory by Packer.
+$ErrorActionPreference = 'Stop'
+$Mgmt     = @('${mgmt_ips}'.Split(',') | Where-Object { $_ })
+$Friendly = 'MidCoast Lab WinRM (self-signed)'
+$LogDir   = 'C:\ProgramData\MidCoastLab\Logs\Bootstrap'
+New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
+Start-Transcript -Path (Join-Path $LogDir "$env:COMPUTERNAME-remoting.txt") -Append | Out-Null
+
+try {
+    $existing = Get-ChildItem Cert:\LocalMachine\My | Where-Object FriendlyName -eq $Friendly
+    $listener = Get-ChildItem WSMan:\localhost\Listener -ErrorAction SilentlyContinue | Where-Object { $_.Keys -contains 'Transport=HTTPS' }
+    if ($existing -and $listener -and ($existing.Subject -eq "CN=$env:COMPUTERNAME")) {
+        Write-Host 'Remoting already initialized.'
+        return
+    }
+
+    # Windows client SKUs disable the built-in Administrator after sysprep;
+    # the orchestrator's first connection uses it.
+    Get-LocalUser | Where-Object { $_.SID.Value -like 'S-1-5-21-*-500' -and -not $_.Enabled } | Enable-LocalUser
+
+    Set-Service -Name WinRM -StartupType Automatic
+    Start-Service -Name WinRM
+
+    # Remove the build cert, any earlier lab cert, and every inherited listener.
+    Get-ChildItem Cert:\LocalMachine\My |
+        Where-Object { $_.FriendlyName -in @('Packer build WinRM', $Friendly) } |
+        Remove-Item -Force
+    Get-ChildItem WSMan:\localhost\Listener | Remove-Item -Recurse -Force
+
+    # New key pair, unique to this clone. Replaced by an AD CS cert in a later phase.
+    $cert = New-SelfSignedCertificate -DnsName $env:COMPUTERNAME -CertStoreLocation Cert:\LocalMachine\My `
+        -FriendlyName $Friendly -KeyAlgorithm RSA -KeyLength 3072 -NotAfter (Get-Date).AddYears(2)
+    New-Item -Path WSMan:\localhost\Listener -Transport HTTPS -Address * -CertificateThumbPrint $cert.Thumbprint -Force | Out-Null
+
+    # Negotiate/Kerberos only.
+    Set-Item WSMan:\localhost\Service\Auth\Basic       -Value $false
+    Set-Item WSMan:\localhost\Service\Auth\CredSSP     -Value $false
+    Set-Item WSMan:\localhost\Service\AllowUnencrypted -Value $false
+
+    # Firewall: WinRM from MGMT addresses only.
+    Get-NetFirewallRule -Name 'WinRM-HTTPS-Build', 'MidCoastLab-WinRM-HTTPS' -ErrorAction SilentlyContinue | Remove-NetFirewallRule
+    Get-NetFirewallRule -DisplayGroup 'Windows Remote Management' -ErrorAction SilentlyContinue | Disable-NetFirewallRule
+    New-NetFirewallRule -Name 'MidCoastLab-WinRM-HTTPS' -DisplayName 'MidCoast Lab WinRM HTTPS (MGMT only)' `
+        -Direction Inbound -Protocol TCP -LocalPort 5986 -RemoteAddress $Mgmt -Action Allow -Profile Any | Out-Null
+
+    # Allow ICMP echo from MGMT for orchestrator reachability checks.
+    New-NetFirewallRule -Name 'MidCoastLab-ICMP-MGMT' -DisplayName 'MidCoast Lab ping (MGMT only)' `
+        -Direction Inbound -Protocol ICMPv4 -IcmpType 8 -RemoteAddress $Mgmt -Action Allow -Profile Any -ErrorAction SilentlyContinue | Out-Null
+
+    # The clone answer file held the encoded local Administrator password.
+    Remove-Item -Path C:\Windows\Panther\unattend-midcoast.xml -Force -ErrorAction SilentlyContinue
+    Remove-Item -Path C:\Windows\Panther\unattend.xml -Force -ErrorAction SilentlyContinue
+
+    Write-Host "WinRM/HTTPS ready for $($Mgmt -join ', ')"
+} finally {
+    Stop-Transcript | Out-Null
+}
