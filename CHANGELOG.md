@@ -18,6 +18,23 @@ Two numbers, in `inventory/lab.yaml`:
 Every release section starts with what it needs: *nothing*, *rebuild templates*, *rotate
 DCs / MGMT*, or *site.yaml change*. Details and reasons: [docs/decisions.md](docs/decisions.md).
 
+## LAB-261105-03 (compatibility 1.4): README and NEW-SITE reorganised
+
+Needs: nothing (`git pull`). Documentation only; no script changes.
+
+- `README.md` is now read first, act last: what the lab is, how the documents fit
+  together, **a lab's lifecycle** (prepare, first build, run, update, start over; this
+  replaces "Status", "What Phase 1 does" and "Keeping in step"), requirements and reference
+  sections, then one **checklist** at the end: get the repo (clone or download), unblock
+  it, install `powershell-yaml`, fill in `site.yaml`, check it, generate the site kit, and
+  follow `RUNBOOK.md`. Git is needed only on MGMT, not on your workstation.
+- `docs/NEW-SITE.md` is now only what to collect for `site.yaml`, where to find each
+  value, how to fill it in, and what the checks' complaints mean. The Git setup, the site
+  kit and the runbook summary moved to the README checklist and the runbook.
+- New `docs/replace-mgmt.md` and `docs/replace-dc.md`, moved from the README's "Replacing
+  MGMT" and "Replacing a DC" (with `git push` after each ledger commit).
+- `docs/mgmt-00.md` and `inventory/site.template.yaml` point to the new places.
+
 ## LAB-261105-02 (compatibility 1.4): tear a site down
 
 Needs: nothing (`git pull`).

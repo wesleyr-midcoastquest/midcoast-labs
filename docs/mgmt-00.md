@@ -4,7 +4,7 @@
 > **This page is a template.** `{{tokens}}` stand for your site's values. Run
 > `./setup/New-LabSiteKit.ps1` to get `out/site-kit/<site>/RUNBOOK.md`, a copy with every
 > value filled in from `inventory/site.yaml`, plus the matching `proxmox-setup.sh`.
-> New site? Start with [NEW-SITE.md](NEW-SITE.md).
+> New site? Start with the [README](../README.md): its checklist leads here.
 <!-- /TEMPLATE-NOTE -->
 
 This takes a site from an empty Proxmox node to two validated domain controllers, both
@@ -272,4 +272,4 @@ Terraform state and the vault, and then retires {{mgmt00.name}}. About an hour.
    can't reach it to log it out). Its local account `{{mgmt00.local_user}}` goes with it.
 
 From here on, MGMT is replaced only by `Invoke-LabMgmtRotation.ps1` and DCs by
-`Invoke-LabDcRotation.ps1` (README, "Replacing MGMT" and "Replacing a DC").
+`Invoke-LabDcRotation.ps1` (the repo's `docs/replace-mgmt.md` and `docs/replace-dc.md`).
