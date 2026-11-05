@@ -1,15 +1,14 @@
 # MidCoast Lab
 
-Hybrid identity lab on Proxmox, rebuilt from source: inventory-driven,
-automation first, validation first, rebuild over repair. The design is in
-[docs/architecture.md](docs/architecture.md); every change from it, and why,
-is in [docs/decisions.md](docs/decisions.md).
+A hybrid identity lab on Proxmox, built entirely from this repo: Active Directory domain
+controllers and a management machine, from your own Windows templates, with your own
+domain and Microsoft 365 tenant. Packer builds the templates, Terraform creates the VMs,
+and PowerShell sets each one up and checks it. Nothing is repaired by hand: a machine that
+is old, outdated or broken is replaced by a new one from the current template.
 
-The repo is portable. `inventory/lab.yaml` is the product and is the same for
-everyone; `inventory/site.yaml` holds the few values that differ per installation
-(AD domain, tenant domain, subnet, Proxmox node, storage, bridge, VMID base, ISO
-names). You make your own `site.yaml` from `inventory/site.template.yaml`;
-`inventory/site.example.yaml` shows a filled-in one.
+**Read this page first, before doing anything.** Everything you need to *do* is in the
+**checklist at the end**; the sections before it explain what you're building and what
+you'll need.
 
 > **A lab, not production.** It builds Windows evaluation editions (Server 2022 180 days,
 > Windows 11 90 days) that it replaces rather than renews, uses self-signed certificates,
@@ -17,62 +16,82 @@ names). You make your own `site.yaml` from `inventory/site.template.yaml`;
 > of its own, never exposed to the internet. MIT licensed ([LICENSE](LICENSE)); security
 > reports: [SECURITY.md](SECURITY.md).
 
-**Getting it.** Clone it (recommended, so you can pull updates):
-`git clone https://github.com/wesleyr-midcoastquest/midcoast-labs.git`, or download a
-release zip from GitHub. Then follow the table below from step 1. Your copy will hold your
-own `site.yaml` and ledger, which describe your lab: keep it in a **private** repo.
+## How the documents fit together
 
-**Which document, in what order (a new lab):**
+1. **This README**: what the lab is, its lifecycle, and what you need. Read it all.
+2. **[docs/NEW-SITE.md](docs/NEW-SITE.md)**: the information to collect about your
+   environment, and how it goes into your `site.yaml`.
+3. **The checklist at the end of this README**: get the repo, fill in `site.yaml`, check
+   it, and generate your **site kit**.
+4. **`RUNBOOK.md`**, in your site kit: the build itself, from an empty Proxmox node to a
+   working lab. It's [docs/mgmt-00.md](docs/mgmt-00.md) with your values filled in.
+5. **Later**, as the lab ages: [docs/replace-mgmt.md](docs/replace-mgmt.md) and
+   [docs/replace-dc.md](docs/replace-dc.md).
 
-| # | Document | What you do there |
-|---|---|---|
-| 1 | README, **Requirements** (below) | Check hardware, storage, Git, domain, tenant, ISOs |
-| 2 | [docs/NEW-SITE.md](docs/NEW-SITE.md) | Make your copy, fill in `site.yaml`, validate it, generate the site kit. Ends by sending you to the runbook |
-| 3 | `out/site-kit/<site>/RUNBOOK.md` | The build itself, steps 1–9: router, ISOs, `proxmox-setup.sh` (MGMT-00 installs unattended), toolchain, vault, both templates, Phase 1, domain join, then replacing MGMT-00 with a pipeline-built MGMT. Generated from [docs/mgmt-00.md](docs/mgmt-00.md) with your values filled in; follow it from step 1, in order |
-| 4 | README, from **What Phase 1 does** on | Running the lab: templates, replacing MGMT, validation IDs |
+Two files hold everything about a lab. `inventory/lab.yaml` is the **product**: roles,
+sizes, names, OUs, groups. It's the same for everyone; you don't edit it.
+`inventory/site.yaml` is **your site**: domain, subnet, Proxmox node, storage and the few
+other values that differ per installation. You make it from `inventory/site.template.yaml`;
+`inventory/site.example.yaml` shows a filled-in one.
 
-**First, if you got the repo as a zip** (or downloaded it), unblock it. Windows marks
-downloaded files "from the internet", and PowerShell then refuses to run the scripts
-("… is not digitally signed"). Easiest is to unblock the zip *before* extracting, so
-nothing inside is marked:
+## A lab's lifecycle
 
-```powershell
-Unblock-File .\midcoast-lab-v1.4.zip
-Expand-Archive .\midcoast-lab-v1.4.zip -DestinationPath C:\
+**1. Prepare (an hour or so, by hand).** Collect your environment's details, fill in
+`site.yaml`, and generate the site kit (the checklist at the end).
+
+**2. First build (about half a day, mostly unattended), following the runbook:**
+- **Proxmox setup**: a script creates the lab's Proxmox account, pool and permissions, and
+  **MGMT-00**, the starter management machine, with Windows installed unattended.
+- **MGMT-00**: you install its toolchain (Git, Terraform, Packer, KeePassXC and the rest)
+  and create the **vault**, where every lab password and key lives.
+- **Templates**: Packer builds a Windows Server 2022 and a Windows 11 template.
+- **Phase 1**: two domain controllers are cloned from the Server template and set up as a
+  new forest:
+  - the first DC creates the forest, DNS and the site, the tiered OUs (`Admin/Tier0|1|2`),
+    groups, your administrators (`<user>` and `<user>-a`), the service accounts, Windows
+    LAPS and the time source;
+  - the second joins it as a replica;
+  - each is gated on its own validation; then both DCs' DNS settings are finalised and
+    everything is validated again.
+- **Replace MGMT-00**: MGMT-00 joins the domain, then hands over to a pipeline-built MGMT.
+  From then on, every machine in the lab is built from a template by the pipeline.
+
+**3. Run.** Every machine checks itself when it's built and writes a validation report
+(see the reference section). The evaluation editions keep the lab moving:
+- **Rebuild the templates monthly**, or after important updates. Existing machines keep
+  the version they were built from; the next replacement gets the new one.
+- **Replace MGMT about every two months** (Windows 11's 90 days):
+  [docs/replace-mgmt.md](docs/replace-mgmt.md).
+- **Replace each DC before 180 days**, one at a time:
+  [docs/replace-dc.md](docs/replace-dc.md).
+
+**4. Update.** New releases (`LAB-<YYMMDD>-<NN>`) arrive in this repo. Each entry in
+[CHANGELOG.md](CHANGELOG.md) starts with what it needs from you: usually nothing beyond
+taking the new files, sometimes rebuilding templates or replacing machines, and only for
+a new major version a change to `site.yaml`. Take a release on the active MGMT by
+replacing everything except `inventory/site.yaml`, `inventory/instances.yaml` and your
+vault (or with `git pull`, if your copy tracks this repo); then run
+`Test-LabInventory.ps1`, which says if anything new is needed, and regenerate the site kit
+if you'll need the runbook again. `lab.yaml` shows the release you're on (`release`) and
+its compatibility number (`version`). Don't change `lab.yaml` or anything else outside
+your `site.yaml` and ledger for your own site: if something doesn't work for you, it's a
+product change, so send it back to the repo's owner and every site gets it.
+
+**5. Start over.** To rebuild from nothing, first save what you want from the old MGMT
+(your `site.yaml`; the vault, if you'll need an old secret). Then copy
+`setup/proxmox/proxmox-teardown.sh` to the lab's node and, as root:
+
+```bash
+bash proxmox-teardown.sh --vmid-base <vmid_base> --dry-run   # what it would remove
+bash proxmox-teardown.sh --vmid-base <vmid_base>             # asks you to type DESTROY
 ```
 
-Already extracted? Unblock the folder instead, from inside it:
-`Get-ChildItem -Recurse | Unblock-File`. Do the same for every copy you run scripts from
-(your workstation, and MGMT-00 in runbook step 5). Only unblock a copy you trust. If
-`Get-ExecutionPolicy` says `Restricted` (Windows client default), also run, once:
-`Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`.
+It removes only the lab's own VMs in its VMID block (anything else there is listed and
+left alone), with the lab's Proxmox pool, user and role. It keeps your ISOs, and backups
+unless you add `--include-backups`. Remove the lab's machines in the Tailscale admin
+console too, then begin again at the checklist.
 
-[docs/decisions.md](docs/decisions.md) and [docs/architecture.md](docs/architecture.md)
-explain why; you don't need them to build. The repo's own author skips NEW-SITE
-step 1 (keep the history; use your existing `site.yaml`) and starts at step 2, but still
-unblocks a fresh zip (above).
-
-```
-Git → Inventory validation → Packer → Terraform → Cloudbase-Init → Bootstrap → Role → Validation
-```
-
-## Status
-
-| Piece | State |
-|---|---|
-| Inventory (lab.yaml product + site.yaml site) + validation; releases `LAB-<YYMMDD>-<NN>`, compatibility 1.4 | ✅ built |
-| Site kit (filled-in runbook + Proxmox setup script) and live site pre-flight | ✅ built |
-| WIN2022-TEMPLATE and WIN11-TEMPLATE (one Packer definition, versioned: new VMs clone the current version) | ✅ built |
-| Linked clones, memory ballooning, right-sized VMs (v1.3) | ✅ built |
-| Terraform (bpg/proxmox, VMs from inventory + ledger) | ✅ built |
-| Runtime modules Lab.Logging/Metadata/Inventory/System/Validation/AD | ✅ built |
-| Lab.Entra | connectivity check only |
-| Phase 1: two DCs, forest, OUs, groups, accounts, delegation, LAPS, DNS, time | ✅ built |
-| **MGMT rotation** (replace the pipeline host itself: Prepare / Complete / Abort) | ✅ built |
-| Terraform guard (refuses any delete a run didn't name, and damage to an active instance) | ✅ built |
-| **DC rotation** (replace a DC from the template: Add / Retire / Abort) | ✅ built (v1.4; first real rotation Nov 2026) |
-| Phase 2 (W11 end-user workstation) | later |
-| Phase 3 (ADES: Entra Connect) | later |
+Not built yet: Phase 2 (a Windows 11 end-user workstation) and Phase 3 (Entra Connect).
 
 ## Requirements
 
@@ -131,9 +150,9 @@ The figures are per lab, on one node. Proxmox clustering isn't required.
 | **ISOs** | Windows Server 2022 evaluation, Windows 11 Enterprise evaluation, `virtio-win.iso` |
 | **A domain you own** | The AD forest is a subdomain of it (`ad.<domain>`); it's also the UPN suffix |
 | **Microsoft 365 / Entra tenant** with that domain verified | UPN suffix now; Entra Connect in Phase 3 (E5 developer licences are fine) |
-| **Git** | Required. The repo must be a git repository: the pipeline commits the ledger (`instances.yaml`) after every run, and every MGMT replacement hands over the full history. MGMT's toolchain installs Git; you also need it wherever you prepare the site |
+| **Git** (on MGMT) | The repo on MGMT must be a git repository: the pipeline commits the ledger (`instances.yaml`) after every run, and every MGMT replacement hands over the full history. MGMT's toolchain installs Git, and the runbook sets the repo up. Not needed on your workstation |
 | **A private git remote** (recommended) | GitHub, GitLab, or Gitea/Forgejo on another machine. Without one, the only copies of the ledger and its history live on MGMT. The repo holds no secrets, but keep it private: it maps your lab |
-| **A workstation with PowerShell 7, `powershell-yaml` and Git** | For `Test-LabInventory.ps1` and `New-LabSiteKit.ps1` before MGMT-00 exists (Windows, macOS or Linux) |
+| **A workstation with PowerShell 7 and `powershell-yaml`** | For checking your `site.yaml` and generating the site kit before MGMT-00 exists (Windows, macOS or Linux) |
 | **KeePassXC** | Installed on MGMT by the toolchain. Back up the `.kdbx` and its master password **outside the lab**: without them the lab's secrets are gone |
 | Tailscale (optional, recommended) | Remote access to the lab. Either a subnet route for the lab subnet, or **every lab machine on your tailnet**: set `tailscale.enabled: true` in `site.yaml` and give `Initialize-LabVault` a **reusable, tagged, non-ephemeral** auth key (leave *Ephemeral* off: an ephemeral device drops off the tailnet when it's offline for a while and can't rejoin, since the key is deleted from each machine after setup). It lives in the vault, never in the repo. Each machine then joins during its setup with `--accept-routes=false --accept-dns=false`, its Tailscale adapter kept out of DNS (DCs keep AD and DNS on their lab address), and Remote Desktop allowed on that adapter; use Tailscale's access rules for who may connect. The key is also kept on each machine as Tailscale's `AuthKey` policy (readable by SYSTEM and Administrators only), and a watchdog task (`MidCoastLab-Tailscale`, every 15 minutes) logs it back in if a restart or update logged it out; scope the tag's access rules to what the lab needs. Retiring a machine logs it out of the tailnet. Auth keys expire: replace it in the vault (`Set-Secret`) when it does. Not a substitute for the direct route above |
 
@@ -147,7 +166,24 @@ The figures are per lab, on one node. Proxmox clustering isn't required.
   20–40 min, Server 2022 and Windows 11 templates ~1 h each, Phase 1 ~1 h, replacing
   MGMT-00 ~1 h).
 
-## Layout
+## Reference: templates
+
+`./orchestration/Build-LabTemplate.ps1 [-Template windows_11]` builds a new **version**
+(`WIN2022-TEMPLATE-<YYMMDD>-<NN>`) at the next free VMID of the template's range and makes
+it current. Existing VMs stay linked clones of the version they were built from; the next
+VM of that role (a rotation) gets the new one. A superseded version is deleted
+automatically once no VM uses it. Rebuild monthly, or after critical updates, and commit
+`inventory/instances.yaml` afterwards (the ledger lists the versions).
+
+## Reference: validation IDs
+
+**DC:** `NET-001/002`, `AD-001/002/003`, `DNS-001…004`, `SYSVOL-001/002`, `FSMO-001`,
+`REPL-001/002`, `TIME-001`, `LAPS-001/002`, `RDP-001` (Remote Desktop), `DNS-005` (no Tailscale address in AD's DNS), `TS-001` (tailnet), `MEM-001` (balloon service), `EVAL-001` (evaluation days left).
+**MGMT:** `NET-001/002`, `MGMT-001…007`, `TS-001`, `MEM-001`, `EVAL-001`.
+Severity and recovery for each: `platform/validation/catalog.psd1`. Reports:
+`C:\ProgramData\MidCoastLab\Logs\Validation\latest.json` on each machine.
+
+## Reference: what's where
 
 ```
 inventory/
@@ -185,170 +221,78 @@ tools/
   Export-LabRelease.ps1                exports a release (no site, no ledger) for the public repo
 CHANGELOG.md          releases (LAB-<YYMMDD>-<NN>, tags match) and the compatibility version
 docs/
-  NEW-SITE.md         handing the repo to another engineer / a new installation
-  mgmt-00.md          first-build runbook (template; the site kit fills it in)
+  NEW-SITE.md         what to collect, and how to fill in site.yaml
+  mgmt-00.md          first-build runbook (template; the site kit fills it in as RUNBOOK.md)
+  replace-mgmt.md     replacing MGMT (about every two months)
+  replace-dc.md       replacing a DC (before its 180 days run out)
+  architecture.md, decisions.md   the design, and why
 ```
 
-## First build, in order
+## Checklist: from nothing to your runbook
 
-1. **Fill in `inventory/site.yaml`** (a new site copies `site.template.yaml`; see
-   [docs/NEW-SITE.md](docs/NEW-SITE.md)), then on any machine with PowerShell 7 and
-   `powershell-yaml`:
-   ```powershell
-   ./orchestration/Test-LabInventory.ps1   # refuses placeholders, bad subnets, VMID/address mistakes
-   ./setup/New-LabSiteKit.ps1              # writes out/site-kit/<site>/
-   ```
-2. **Follow `out/site-kit/<site>/RUNBOOK.md`.** It is [docs/mgmt-00.md](docs/mgmt-00.md)
-   with your site's values filled in, and covers, in order:
-   - the router on the lab bridge (the site's gateway), **DHCP excludes the lab range
-     `.10`–`.49`** (`network.static_range`), DHCP on for the rest (new VMs use it for
-     their first boot), and an optional Tailscale subnet route;
-   - uploading the three ISOs with exactly the names in `site.yaml`;
-   - `proxmox-setup.sh check`, then `proxmox-setup.sh`, as root on the node: pre-flight
-     (node, storage, bridge, ISOs, VMID collisions), then pool, least-privilege role,
-     `terraform-prov@pve` and its tokens, and the MGMT-00 VM with Windows installed
-     unattended;
-   - MGMT-00's updates, the toolchain, the vault;
-   - `Test-LabInventory.ps1`, `Test-LabSite.ps1` (live pre-flight), both templates and
-     Phase 1;
-   - joining MGMT-00 to the domain;
-   - replacing MGMT-00 with a pipeline-built MGMT (the first MGMT rotation, below).
+Work through these in order, on your **workstation** (Windows, macOS or Linux, with
+PowerShell 7). At the end you have your site kit, and the runbook takes it from there.
 
-After that, every machine in the lab is template-built and pipeline-managed. `Build-LabTemplate`, `Invoke-LabPhase` and `Invoke-LabMgmtRotation`
-run `Test-LabSite.ps1` first and stop on any error.
+**1. Check the requirements** above: Proxmox, storage, a router on the lab bridge, a /24
+of its own, a domain in your Microsoft 365 tenant, the three ISOs.
 
-## What Phase 1 does
+**2. Get the repo**, either way:
+- **Clone it**, if you have Git: `https://github.com/wesleyr-midcoastquest/midcoast-labs.git`.
+  You can take later releases with `git pull`.
+- **Download it** from GitHub: **Code → Download ZIP**, or a zip from **Releases**.
 
-1. Validates the inventory and the site; allocates `DC-<today>-00` (slot A, host .10,
-   forest) and `DC-<today>-01` (slot B, host .11, replica) in the ledger.
-2. `terraform apply` creates both as linked clones of the current WIN2022-TEMPLATE version
-   (recorded per instance in the ledger as `template_vmid`).
-3. For each DC, in order: connects over WinRM/HTTPS (MGMT addresses only), pushes the
-   platform, metadata and that DC's secrets, starts bootstrap, and follows it
-   through reboots.
-   - **Forest DC**: features → `Install-ADDSForest` → DNS forwarders + reverse zone,
-     site subnet, the tenant domain as UPN suffix, the tiered OUs (`Admin/Tier0|1|2`), groups
-     in their tier (`SG-ROLE-DomainAdmins` → Domain Admins), each administrator from
-     `site.yaml` as `<user>` (People) and `<user>-a` (their tier), `svc-labdeploy` and `svc-domainjoin` (Tier 0; join is delegated
-     on every computer OU), new computers → `Staging`, Windows LAPS (schema, policy on every
-     computer OU, DSRM backup on DCs), PDC → the site's NTP servers.
-   - **Replica DC**: waits for the domain → `Install-ADDSDomainController` with
-     `svc-labdeploy` → DNS client partner-first.
-4. Gates on each DC's validation report: Critical stops the run.
-   Each DC is marked active in the ledger as soon as its own validation passes.
-5. Sets every DC's DNS client partner-first (loopback last) and re-validates all DCs.
+Your copy will soon hold your own `site.yaml`, which describes your lab: if you keep it in
+a git remote, keep that one **private**.
 
-Re-run with `-Retry` after fixing a failure; it resumes from the stage that failed. If
-every DC is already active and only step 5 failed, `-Retry` re-runs step 5 alone.
+**3. Windows only: unblock the files.** Windows marks downloaded files "from the
+internet", and PowerShell then refuses to run them ("… is not digitally signed").
+- **Downloaded a zip:** unblock the zip **before** extracting it, so nothing inside is marked:
+  ```powershell
+  Unblock-File .\midcoast-labs-master.zip
+  Expand-Archive .\midcoast-labs-master.zip -DestinationPath C:\
+  ```
+- **Already extracted it** (or cloned it): unblock the folder, from inside it:
+  ```powershell
+  Get-ChildItem -Recurse | Unblock-File
+  ```
+- If `Get-ExecutionPolicy` says `Restricted` (the Windows client default), also run, once:
+  ```powershell
+  Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
+  ```
 
-## Replacing MGMT
+Only unblock a copy you trust. You'll do the same again on MGMT-00 (the runbook says when).
 
-MGMT runs the pipeline, so it can't destroy itself and start over. Replacing it is a
-handover between two machines. Every guest's WinRM firewall allows both MGMT slot
-addresses (hosts `.30` and `.31`), so the replacement can manage the lab from the moment
-it takes over.
-
-**Before you start:**
-- `proxmox.endpoint` must be reachable **from the lab subnet**, not only over Tailscale or
-  a VPN: the new MGMT isn't on your tailnet. Validation warns about `*.ts.net` and
-  `100.64.0.0/10` endpoints.
-- Back up the current MGMT's VM with a Proxmox **backup** (`vzdump <vmid> --storage <s>`) to a
-  storage with the `backup` content type and room for it (`pvesm status`); LVM-thin and ZFS
-  pools such as `local-lvm` can't hold backups, and a node's `local` is its root disk. Not a snapshot:
-  Complete destroys the VM, and its snapshots with it.
-- Plan how you'll reach the new MGMT: Remote Desktop is allowed from the lab subnet and
-  from any network in `site.yaml` `network.remote_desktop_from` (e.g. your workstation's
-  LAN). Otherwise connect from the current MGMT, or use the Proxmox console.
-
-**1. On the current MGMT** (PowerShell 7, vault unlocked):
+**4. Install the YAML module** for PowerShell 7, once per workstation:
 ```powershell
-./orchestration/Invoke-LabMgmtRotation.ps1 -Stage Prepare
+Install-Module powershell-yaml -Scope CurrentUser
 ```
-This builds `MGMT-<today>-00` in the spare slot from the current WIN11-TEMPLATE version. Its bootstrap
-installs the same toolchain as the hand-build, turns on Remote Desktop (lab subnet plus
-`network.remote_desktop_from`, NLA) and joins the domain into `Admin/Tier0/Devices` (MGMT is a Tier 0 admin workstation); LAPS then takes over its local
-Administrator. Prepare stops on any Critical result from its validation (`MGMT-001…007`:
-toolchain, RSAT, modules, domain trust, WinRM reach to every DC, Proxmox API, Remote
-Desktop; RSAT is High, so only reported), then hands over the
-repo (with git history), Terraform state and KeePass vault, each hash-verified.
-Last, it locks the old MGMT: every pipeline script on it refuses to run, except Abort.
 
-**2. On the new MGMT** (Remote Desktop as `<NETBIOS>\<you>-a`; a normal PowerShell 7 window is fine):
+**5. Make your `site.yaml`**, from the repo's folder:
 ```powershell
-cd C:\MidCoastLab\repo
-git config --global user.name  "<Your Name>"; git config --global user.email "<you@example.com>"   # new profile
-./setup/mgmt/Initialize-LabVault.ps1 -DatabasePath C:\MidCoastLab\MidCoastLab.kdbx   # registers the vault for your account
-./orchestration/Invoke-LabMgmtRotation.ps1 -Stage Complete
-git add inventory/instances.yaml; git commit -m "MGMT rotation"
+Copy-Item inventory/site.template.yaml inventory/site.yaml
 ```
-Complete checks it can reach Proxmox and every DC, and that the handed-over Terraform
-state matches the ledger (creates or deletes stop it; in-place updates only warn). Then it
-shuts the old MGMT down, destroys its VM and confirms it's gone, and only then removes
-its computer object and DNS records. **The first time, add `-KeepOld`** to only shut it down;
-run Complete again later to destroy it.
+Then fill it in, using [docs/NEW-SITE.md](docs/NEW-SITE.md): it lists what to collect
+and what goes where.
 
-**Rolling back:** until Complete destroys the old MGMT, run
-`Invoke-LabMgmtRotation.ps1 -Stage Abort` on it. After the handover this needs
-`-Force`, because anything done on the new MGMT since then is discarded.
-
-Slots alternate: the next rotation builds into slot A again (host `.30`, VMID `vmid_base + 20`).
-
-## Replacing a DC
-
-A DC is replaced by a new one from the current WIN2022-TEMPLATE version, never repaired.
-The forest stays; only the machines change. Run from the active MGMT, in an **elevated**
-PowerShell 7 window (the script also points this machine's DNS at the new set of DCs).
-
-**Safety net (optional):** snapshot **both** DCs first, on the node as root
-(`qm snapshot <vmid> pre-rotation` for each). On LVM-thin or ZFS a snapshot lives in the
-VM's own storage and only stores changes, so it costs little. If you ever revert, revert
-both DCs together: reverting one DC alone puts it behind its partner. Delete the snapshots
-(`qm delsnapshot <vmid> pre-rotation`) once Retire is done; the retired DC's goes with its VM.
-
+**6. Check it:**
 ```powershell
-./orchestration/Invoke-LabDcRotation.ps1 -Stage Add      # optional: -Replace <DC name>; default the oldest
-git add inventory/instances.yaml; git commit -m "DC rotation: add"
-# ...check anything you like...
-./orchestration/Invoke-LabDcRotation.ps1 -Stage Retire
-git add inventory/instances.yaml; git commit -m "DC rotation: retire"
+./orchestration/Test-LabInventory.ps1
 ```
+It refuses anything left as a placeholder, `.local` names, a subnet that isn't a /24, a
+gateway inside the lab's range, and similar mistakes, and says what to fix. Fix and re-run
+until it reports no errors (warnings are worth reading, but don't stop you).
 
-**Add** checks both DCs pass validation, builds `DC-<today>-NN` in the free DC slot as a
-replica of the DC that stays, gates on its validation, moves every FSMO role (and with the
-PDC emulator, the external time source) from the old DC to the new one, marks the old one
-`retiring` and points every DNS client in the lab at the active DCs: DCs partners first and
-loopback last, every other lab machine and this MGMT the DCs. The old DC keeps running as a
-third DC; nothing depends on it any more.
+**7. Generate your site kit:**
+```powershell
+./setup/New-LabSiteKit.ps1
+```
+It writes `out/site-kit/<your site>/`:
+- **`RUNBOOK.md`**: the build, step by step, with every command and value filled in for
+  your site;
+- **`proxmox-setup.sh`**: the Proxmox setup script, with your site's values built in.
 
-**Retire** demotes the old DC, removes the DNS records it left behind and its computer
-object, and destroys the VM. Terraform may delete exactly that VM and nothing else.
+Re-run it whenever you change `site.yaml`.
 
-**Abort** (before Retire) undoes Add: the old DC is active again, FSMO roles and DNS
-clients move back, and the replacement is demoted and destroyed.
-
-Every stage can be re-run after a failure. `-Force` (Retire/Abort) handles a DC that can't
-be reached: its FSMO roles are seized and it's cleaned out of AD (ntdsutil metadata
-cleanup) instead of demoted.
-
-The DCs' addresses move: the new DC takes the free slot (`.10`–`.12`), so after a rotation
-the lab's DNS servers are different addresses. Anything outside the lab that you pointed at
-a DC by hand (a DNS override or forward on the router, Tailscale split DNS, a workstation)
-needs updating; Add prints the new addresses. Rotate one DC at a time, and before either
-DC's evaluation licence runs out (`EVAL-001`).
-
-## Templates
-
-`./orchestration/Build-LabTemplate.ps1 [-Template windows_11]` builds a new **version**
-(`WIN2022-TEMPLATE-<YYMMDD>-<NN>`) at the next free VMID of the template's range and makes
-it current. Existing VMs stay linked clones of the version they were built from; the next
-VM of that role (a rotation) gets the new one. A superseded version is deleted
-automatically once no VM uses it. Rebuild monthly, or after critical updates, and commit
-`inventory/instances.yaml` afterwards (the ledger lists the versions).
-
-## Validation IDs
-
-**DC:** `NET-001/002`, `AD-001/002/003`, `DNS-001…004`, `SYSVOL-001/002`, `FSMO-001`,
-`REPL-001/002`, `TIME-001`, `LAPS-001/002`, `RDP-001` (Remote Desktop), `DNS-005` (no Tailscale address in AD's DNS), `TS-001` (tailnet), `MEM-001` (balloon service), `EVAL-001` (evaluation days left).
-**MGMT:** `NET-001/002`, `MGMT-001…007`, `TS-001`, `MEM-001`, `EVAL-001`.
-Severity and recovery for each: `platform/validation/catalog.psd1`. Reports:
-`C:\ProgramData\MidCoastLab\Logs\Validation\latest.json` on each machine.
+**8. Open `out/site-kit/<your site>/RUNBOOK.md` and follow it from step 1, in order.**
+Its first steps prepare the router and Proxmox and create MGMT-00; from then on you work
+on MGMT-00, and the runbook ends with a working lab.

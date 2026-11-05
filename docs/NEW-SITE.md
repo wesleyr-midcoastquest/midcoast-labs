@@ -1,14 +1,12 @@
-# Setting up a new MidCoast Lab site
+# Your site: what to collect, and how to fill in `site.yaml`
 
-This is for an engineer who has been handed this repo and wants the same lab on
-their own Proxmox, with their own domain name and Microsoft 365 tenant. It's the
-second of three documents: README **Requirements** first, then this, then the
-`RUNBOOK.md` that step 3 generates for you, which is the build itself.
+This is step 5 of the README's checklist. Everything that differs between one MidCoast
+Lab and another is in one file, `inventory/site.yaml`: your domain, your network, your
+Proxmox. This page lists what to collect for it, where to find each value, and how to
+write it in. Then you go back to the README checklist (step 6) to check it.
 
-Everything about **what** the lab is (roles, sizes, slots, host numbers, OU
-tree, groups, tiering, naming, validation) lives in `inventory/lab.yaml` and is
-the same at every site. Everything about **where** it runs lives in
-`inventory/site.yaml`. You only edit `site.yaml`.
+Everything else (roles, sizes, host numbers, the OU tree, groups, naming, validation) is
+in `inventory/lab.yaml`, the same at every site. You don't edit it.
 
 | Same everywhere (`lab.yaml`) | Yours (`site.yaml`) |
 |---|---|
@@ -19,222 +17,136 @@ the same at every site. Everything about **where** it runs lives in
 | OU tree, tiering, groups, service accounts, LAPS | Entra tenant domain (UPN suffix), your administrators |
 | Pool `MidCoast-Lab`, user `terraform-prov@pve`, vault `MidCoastLab` | Proxmox node, endpoint, bridge, storages, ISO names |
 
-## What you need
+## 1. Collect the information
 
-Hardware sizing (RAM, CPU, disk) and the full list of software, accounts and
-licensing are in the README under **Requirements**. In short:
+Gather these first; most take a minute in the Proxmox web UI or a root shell on the node.
+The last column is where each goes in `site.yaml`.
 
-- **Proxmox VE 9.x**, root shell on the node the lab will run on. One lab per
-  Proxmox cluster: the pool, role and `terraform-prov@pve` user are cluster-wide
-  names.
-- **Storage** that holds disk images, ideally **LVM-thin, ZFS or Ceph RBD** (e.g.
-  `local-lvm`, `local-zfs`): the lab's VMs are linked clones of their template, which
-  those support. Use the same storage for templates and VMs. On any other storage (a
-  directory, NFS), set `proxmox.clone_mode: full`; it works the same but uses about
-  twice the disk. Decide before the first build: a change later only applies to VMs
-  built after it. On node-local storage, linked clones can't be migrated to another
-  node, so the lab stays on its node. Plus one storage that holds ISO images (e.g. `local`).
-- **A Linux bridge for the lab** (e.g. `vmbr2`) with a **router on it** (usually at `.1`;
-  anywhere outside `.10`–`.49`) that serves DHCP *outside* `.10`–`.49`. New VMs take a DHCP address on first boot;
-  the lab's static addresses are all in `.10`–`.49`.
-- **A /24 nobody else uses**: not your home LAN, and not the subnet of any other
-  MidCoast lab you might reach over a shared tailnet or VPN.
-- **A domain you own**, verified as a custom domain in your **Microsoft 365 / Entra
-  tenant** (E5 developer licences are fine). The AD forest is a subdomain of it,
-  e.g. tenant domain `example.com`, AD domain `ad.example.com`. Phase 3 (Entra
-  Connect) isn't built yet; until then the tenant domain is used as every user's
-  UPN suffix, so pick it now: changing it later means re-suffixing accounts.
-- **ISOs**: Windows Server 2022 evaluation, Windows 11 Enterprise evaluation,
-  `virtio-win.iso`.
-- **A machine with PowerShell 7** and the `powershell-yaml` module for the first two
-  steps (your workstation; MGMT-00 doesn't exist yet):
-  `Install-Module powershell-yaml -Scope CurrentUser`.
+### You and your site
 
-## 1. Start your own copy
+| What | Where to find it / how to choose | `site.yaml` |
+|---|---|---|
+| A short name for this lab | Your choice, e.g. `jdoe-lab`. Shown in logs and the site kit | `site.name` |
+| Time zone | A **Windows** time zone ID, such as `Eastern Standard Time` (not `America/New_York`): `tzutil /l` on any Windows machine lists them. `UTC` suits a team in several time zones | `site.time_zone` |
+| Your administrator account(s) | A username (18 characters or fewer), given name and surname for each. At least one at tier 0. Each gets `<username>` (standard) and `<username>-a` (admin) | `identity.administrators` |
 
-Start from a clean copy, not the original site's history or state.
+### Domain and tenant
 
-**Unblock it first** if it came as a zip or a download, or no script will run ("… is not
-digitally signed"): `Unblock-File <the zip>` before extracting, or
-`Get-ChildItem -Recurse | Unblock-File` inside the extracted folder (README, top).
+| What | Where to find it / how to choose | `site.yaml` |
+|---|---|---|
+| Your tenant domain | A domain you own, verified as a custom domain in your Microsoft 365 / Entra tenant (Microsoft 365 admin center → **Settings → Domains**). It becomes every user's UPN suffix, so choose it now: changing it later means re-suffixing every account | `identity.entra.tenant_domain` |
+| The AD domain | A subdomain of the tenant domain, usually `ad.<tenant domain>`. **Permanent** for the life of the forest. Never `.local`, never a single label | `identity.active_directory.domain` |
+| The NetBIOS name | 15 characters or fewer, no dots, usually your domain's first part in capitals (`EXAMPLE`) | `identity.active_directory.netbios` |
 
-First make sure Git is installed and knows who you are (once per machine). If
-`git --version` says "not recognized", install it, then **open a new PowerShell
-window** so it's on the PATH:
+### Network
 
-```powershell
-git --version                                    # install if this fails:
-winget install --id Git.Git -e --source winget   # or download from git-scm.com
-```
+| What | Where to find it / how to choose | `site.yaml` |
+|---|---|---|
+| A /24 for the lab | One nothing else uses: not your home LAN, and not another MidCoast lab you might reach over a shared tailnet or VPN. Written as its network address, e.g. `10.88.20.0/24`. Lab machines take fixed addresses in `.10`–`.49` (first DC `.10`, MGMT-00 `.30`) | `network.subnet` |
+| The gateway | The router on the lab bridge, usually `.1`, and anywhere outside `.10`–`.49`. Its DHCP must hand out only addresses outside `.10`–`.49` | `network.gateway` |
+| Upstream DNS | Where the DCs forward names they don't hold; often the gateway | `network.dns_forwarders` |
+| NTP | `pool.ntp.org` works; use your own time source if you have one | `network.ntp` |
+| Remote Desktop from elsewhere (optional) | Only if you need to reach MGMT from outside the lab subnet, e.g. your workstation's LAN. Keep it narrow | `network.remote_desktop_from` |
 
-No `winget` (Windows Server, older Windows 10)? In an **elevated** PowerShell:
+### Proxmox
 
-```powershell
-[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-$rel   = Invoke-RestMethod https://api.github.com/repos/git-for-windows/git/releases/latest
-$asset = $rel.assets | Where-Object name -like 'Git-*-64-bit.exe' | Select-Object -First 1
-$exe   = Join-Path $env:TEMP $asset.name
-Invoke-WebRequest $asset.browser_download_url -OutFile $exe -UseBasicParsing
-Start-Process $exe -ArgumentList '/VERYSILENT', '/NORESTART' -Wait
-```
+| What | Where to find it / how to choose | `site.yaml` |
+|---|---|---|
+| Cluster name | Datacenter → **Cluster** (or `pvecm status`); for a single node, anything. Informational only | `proxmox.cluster` |
+| Node | The node the lab runs on: its name in the web UI's tree, or `hostname` on it | `proxmox.node` |
+| API endpoint | The address you open the web UI with: `https://<host>:8006/`. The lab subnet must reach it directly (README, Requirements) | `proxmox.endpoint` |
+| Certificate | Leave `insecure_tls: true` for Proxmox's default self-signed certificate | `proxmox.insecure_tls` |
+| Lab bridge | The node → **System → Network** (or `ip -br link`), e.g. `vmbr2`: the bridge the lab's router is on | `proxmox.bridge` |
+| VM storage | Datacenter → **Storage** (or `pvesm status`): one that holds **disk images**, ideally LVM-thin, ZFS or Ceph RBD (`local-lvm`, `local-zfs`). Use the same one for both settings | `proxmox.storage.templates`, `proxmox.storage.virtual_machines` |
+| ISO storage | One that holds **ISO images**, usually `local` | `proxmox.storage.iso_repository` |
+| A free VMID block | The lab uses 150 IDs from `vmid_base`. List what's taken with `pvesh get /cluster/resources --type vm` (or the web UI's tree) and pick a base with nothing in its 150, e.g. `3000` (servers 3000–3099, templates 3100–3149; MGMT-00 is 3020) | `proxmox.vmid_base` |
+| Clone mode | Only if your VM storage is a directory or NFS (no linked clones): `clone_mode: full`, which uses about twice the disk. Decide before the first build | `proxmox.clone_mode` |
 
-Then, in a new window:
+One lab per Proxmox cluster: the pool, role and `terraform-prov@pve` user are cluster-wide
+names.
 
-```powershell
-git config --global user.name  "Your Name"
-git config --global user.email "you@example.com"
-```
+### ISOs
 
-**Cloned it?** (recommended: you can pull later releases.) Keep the public repo as
-`upstream` and give your copy a **private** home of its own, because your `site.yaml` and
-ledger will describe your lab:
+| What | Where to find it | `site.yaml` |
+|---|---|---|
+| The three ISO file names, exactly | Windows Server 2022 evaluation, Windows 11 Enterprise evaluation and `virtio-win.iso`, on the ISO storage: the storage's **ISO Images** tab, or `pvesm list local --content iso`. Not uploaded yet? Use the names you'll upload them under (runbook step 2) | `isos` |
 
-```powershell
-git remote rename origin upstream
-Copy-Item inventory/site.template.yaml inventory/site.yaml
-git add inventory/site.yaml inventory/instances.yaml; git commit -m "MidCoast Lab: new site"
-# later, after creating an empty private repo:  git remote add origin <its URL>; git push -u origin master
-```
+### Tailscale (optional)
 
-Taking a new release later is `git pull upstream master`: releases never contain a
-`site.yaml`, and their `instances.yaml` is the empty one you already have, so your files
-stay as they are.
+| What | How to choose | `site.yaml` |
+|---|---|---|
+| Whether every lab machine joins your tailnet | Recommended if you use Tailscale for remote access | `tailscale.enabled` |
 
-**Downloaded a zip instead?** From the folder you unzipped (each command on its own line;
-if you paste several at once, check they didn't run together onto one line):
-
-```powershell
-Get-ChildItem -Recurse | Unblock-File    # files from a zip are marked "from the internet"
-Copy-Item inventory/site.template.yaml inventory/site.yaml -Force
-Set-Content inventory/instances.yaml "instances: []`ntemplates: []"
-Remove-Item -Recurse -Force .git, inventory/resolved, out, terraform/.terraform -ErrorAction SilentlyContinue
-git init
-git add .
-git commit -m "MidCoast Lab: new site"
-```
-
-These work in Windows PowerShell 5.1 and PowerShell 7.
-
-`instances.yaml` is the ledger of what exists *at a site*; you must not inherit
-someone else's (validation refuses a ledger whose addresses or VMIDs don't fit
-your site). There is no `.kdbx` or state file in the repo; each site makes its
-own.
+Only the yes/no goes in `site.yaml`. The **auth key** goes in the vault later (the runbook
+asks for it), never in this file. Make it **reusable**, **tagged** (e.g.
+`tag:midcoast-lab`) and **not ephemeral** (leave *Ephemeral* off): an ephemeral device is
+removed from the tailnet once it's offline for a while and can't rejoin by itself.
 
 ## 2. Fill in `site.yaml`
 
-Replace every `<placeholder>` in `inventory/site.yaml`, **angle brackets included**:
-`domain: <ad.your-domain>` becomes `domain: ad.example.com`. The comments say what each
-one is. The ones to think about:
-
-- **`identity.active_directory.domain`**: permanent for the life of the forest.
-  A subdomain of your tenant domain (`ad.example.com`), never `.local`, never a
-  single label.
-- **`netbios`**: 15 characters or fewer, no dots.
-- **`administrators`**: at least one at tier 0. Each gets `<username>` (standard) and
-  `<username>-a` (admin, in `Admin/Tier<n>/Accounts`).
-- **`network.subnet`**: a unique /24 (see above). Lab hosts land at fixed host numbers, so
-  with `10.88.20.0/24` the first DC is `10.88.20.10`, MGMT-00 is `10.88.20.30`.
-- **`proxmox.vmid_base`**: the lab uses `vmid_base` … `vmid_base + 149`. Pick a block
-  with nothing in it (`pvesh get /cluster/resources --type vm`); e.g. `3000` means
-  servers 3000–3099, templates 3100–3149, MGMT-00 is 3020.
-- **`site.time_zone`**: a Windows ID such as `Eastern Standard Time`, not `America/New_York`.
-- **`isos`**: `<iso storage>:iso/<exact file name>`, as Proxmox shows them.
-- **`tailscale.enabled`** (optional): every lab machine joins your tailnet. The auth key
-  goes in the vault (runbook step 6), never in `site.yaml`. Make it **reusable**, **tagged** (e.g. `tag:midcoast-lab`) and **not ephemeral** (leave *Ephemeral* off): an ephemeral device is removed from the tailnet once it's offline for a while and can't rejoin by itself; lab machines restart, and the key is deleted from each machine after setup.
-
-Then check it:
+If you haven't yet, make it from the template, in the repo's folder (README checklist,
+step 5):
 
 ```powershell
-./orchestration/Test-LabInventory.ps1
+Copy-Item inventory/site.template.yaml inventory/site.yaml
 ```
 
-It refuses placeholders, `.local` names, anything but a /24 network address, a
-gateway inside the lab range or outside the subnet, a `vmid_base` under 100, ISOs not
-on the ISO storage, and product settings put in `site.yaml`. It warns about common
-home-router subnets. Fix and re-run until it has no errors, then commit it:
+Open it in any text editor and replace every `<placeholder>` with what you collected,
+**angle brackets included**. The comments in the file say what each one is.
 
-```powershell
-git add inventory/site.yaml; git commit -m "Site settings"
+```yaml
+# before
+    domain: <ad.your-domain>
+    netbios: <NETBIOS>
+# after
+    domain: ad.example.com
+    netbios: EXAMPLE
 ```
 
-`inventory/site.example.yaml` is a filled-in example (`example.com`, `pve01`) to compare
-with; your `site.yaml` started from the blank template, so none of its sample values carry
-over.
+A few things to watch:
 
-## 3. Generate your site kit
+- **Indentation is meaningful** in YAML: keep the spaces as they are, and use spaces,
+  never tabs.
+- **ISOs** are written `<iso storage>:iso/<file name>`, e.g.
+  `local:iso/virtio-win.iso`.
+- **Time zones with spaces** are fine as they are (`time_zone: Eastern Standard Time`).
+- **More administrators**: copy the whole `- username:` block, keep its indentation, and
+  give each a tier.
+- Leave the optional settings (`remote_desktop_from`, `clone_mode`) commented out unless
+  you need them.
 
-```powershell
-./setup/New-LabSiteKit.ps1
-```
+`inventory/site.example.yaml` is a complete, filled-in example (`example.com`, `pve01`)
+to compare with. Don't copy its values: they belong to an imaginary site.
 
-It writes `out/site-kit/<site>/`:
+## 3. Back to the README checklist
 
-- **`RUNBOOK.md`**: the first-build runbook ([mgmt-00.md](mgmt-00.md)) with every
-  command and value filled in for your site.
-- **`proxmox-setup.sh`**: the Proxmox setup script with your site's values baked in.
+Next is the README checklist's **step 6**, `Test-LabInventory.ps1`, which checks what
+you've written. When it complains:
 
-Re-run it whenever you change `site.yaml`. `out/` isn't committed.
+- **A placeholder remains**: something still has `<…>` in it, brackets included.
+- **`.local` or single-label domain**: use a subdomain of your tenant domain.
+- **Subnet**: it must be a /24 written as its network address (`10.88.20.0/24`, not
+  `10.88.20.1/24`).
+- **Gateway**: it must be inside the subnet, and outside `.10`–`.49`.
+- **`vmid_base`**: it must be 100 or more.
+- **ISOs**: each must be on the storage named in `iso_repository`.
+- **A product setting in `site.yaml`**: something that belongs in `lab.yaml` was added;
+  remove it.
+- **Warning about a common home-router subnet** (`192.168.0.0/24`, `192.168.1.0/24` and
+  the like): not an error, but make sure it isn't one your network already uses.
 
-## 4. Follow `RUNBOOK.md`
+Later, two live checks look at Proxmox and the network itself: `proxmox-setup.sh check`
+(runbook step 3) and `Test-LabSite.ps1` (runbook step 7). If they find something already
+there:
 
-From step 1. In short:
+- **A VMID is taken** by something that isn't this lab: choose another `vmid_base`,
+  re-run `New-LabSiteKit.ps1`, and check again. Don't move the other VM to make room.
+- **An address is in use**: a device outside the lab answers on a lab address. Move it
+  out of `.10`–`.49`, or fix the router's DHCP range.
+- **A `MidCoast-Lab` pool or `terraform-prov@pve` user exists**: from an earlier attempt
+  at this lab, the setup script updates them in place. From something else, stop: one lab
+  per cluster.
 
-1. Router: the gateway address, DHCP excludes `.10`–`.49`.
-2. Upload the ISOs.
-3. On the node, as root: `bash proxmox-setup.sh check`, then `bash proxmox-setup.sh`.
-   It also installs Windows 11 on MGMT-00 unattended and waits for it.
-   The check fails (and changes nothing) if you're on the wrong node, a storage or
-   the bridge is wrong, an ISO MGMT-00 needs is missing, or **any lab VMID is
-   already taken** by something that isn't this lab. Then it creates the pool,
-   role, user, API tokens (copy the two secrets) and the MGMT-00 VM.
-4. Sign in to MGMT-00, Windows updates, the toolchain and the vault.
-5. `Test-LabInventory.ps1`, then `Test-LabSite.ps1`: the live check from MGMT with
-   the provisioning token (Proxmox, storages, bridge, ISOs, pool, VMIDs, and **nothing
-   outside the lab answering on a lab address**). Then both templates and Phase 1.
-6. Join MGMT-00 to the domain.
-7. Replace MGMT-00 with a pipeline-built MGMT (the first MGMT rotation).
-
-From there, the README applies unchanged: Phase 1 output, replacing MGMT, validation
-IDs. Commit `inventory/instances.yaml` after every run that changes it.
-
-## Keeping in step with the original
-
-To keep "everything else consistent":
-
-- **Don't edit `lab.yaml`**, or anything outside `inventory/site.yaml` and
-  `inventory/instances.yaml`, for your own site. If something there doesn't work for
-  you, it's a product change: send it back to the repo's owner so every site gets it.
-- **Taking product updates**: replace everything except `inventory/site.yaml`,
-  `inventory/instances.yaml` and your `.kdbx`. Then run `Test-LabInventory.ps1`: if a
-  new version needs a new site value, it says which, and `site.template.yaml` has the
-  key with a comment. Regenerate the site kit if you'll need the runbook again.
-- `lab.yaml`'s `release` says which release you're on, and `version` its compatibility
-  number. Each release in `CHANGELOG.md` starts with what it needs from you: nothing,
-  rebuilding templates, replacing machines, or (a new **major** version) a `site.yaml` change.
-
-## If something's already there
-
-- **VMID collision** (from `proxmox-setup.sh check` or `Test-LabSite.ps1`): pick
-  another `vmid_base`, re-run `New-LabSiteKit.ps1`, and run the check again. Don't
-  move the other VM to make room.
-- **Address in use** (`Test-LabSite.ps1`): a device outside the lab answers on a lab
-  address. Move it out of `.10`–`.49`, or fix the router's DHCP pool.
-- **Existing `MidCoast-Lab` pool or `terraform-prov@pve`** on your cluster: from an
-  earlier attempt at this lab, the setup script updates them in place. From something
-  else, stop: one lab per cluster.
-
-## Starting over
-
-To rebuild a site from scratch, remove it from Proxmox first. As root on the lab's node:
-
-```bash
-bash proxmox-teardown.sh --vmid-base <vmid_base> --dry-run   # what it would remove
-bash proxmox-teardown.sh --vmid-base <vmid_base>             # asks you to type DESTROY
-```
-
-(`setup/proxmox/proxmox-teardown.sh`; copy it to the node like `proxmox-setup.sh`. It needs
-no site kit.) It keeps your ISOs, and backups unless you add `--include-backups`. It only
-removes the lab's own VMs in its VMID block; anything else there is listed and left alone.
-Then: remove the lab's machines in the Tailscale admin console, save anything you want
-from the old MGMT (your `site.yaml`; the vault, if you'll need an old secret), and start
-again from step 1.
+Change `site.yaml` any time before the first build. Afterwards, the domain, NetBIOS name
+and subnet are fixed for the life of the lab; changing them means starting over (README,
+"A lab's lifecycle").

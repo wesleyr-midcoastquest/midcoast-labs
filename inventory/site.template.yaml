@@ -4,7 +4,7 @@
 # included: `domain: <ad.your-domain>` becomes `domain: ad.example.com`. Validation
 # (./orchestration/Test-LabInventory.ps1) refuses to run while any remain.
 # Only these settings differ between sites; everything in lab.yaml stays the
-# same everywhere. Full walkthrough: docs/NEW-SITE.md.
+# same everywhere. What to collect for each: docs/NEW-SITE.md.
 
 site:
   name: <short-site-name>           # free text, e.g. "jdoe-lab": shown in logs and the site kit
