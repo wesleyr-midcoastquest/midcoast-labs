@@ -18,6 +18,18 @@ Two numbers, in `inventory/lab.yaml`:
 Every release section starts with what it needs: *nothing*, *rebuild templates*, *rotate
 DCs / MGMT*, or *site.yaml change*. Details and reasons: [docs/decisions.md](docs/decisions.md).
 
+## LAB-261105-02 (compatibility 1.4): tear a site down
+
+Needs: nothing (`git pull`).
+
+- `setup/proxmox/proxmox-teardown.sh`: removes a site from Proxmox so it can be built again
+  from scratch, keeping the ISOs. Shows the plan first (`--dry-run` stops there) and asks
+  you to type DESTROY. It removes only the lab's own VMs in its VMID block (tagged
+  `midcoast-lab`, or in the pool; anything else there is listed and skipped), clones
+  before templates, leftover disks in that block, the pool, the provisioning user and its
+  tokens, the role, MGMT-00's answer CD and any leftover secrets file; with
+  `--include-backups`, the block's vzdump backups.
+
 ## LAB-261105-01 (compatibility 1.4): ready to publish
 
 Needs: nothing (`git pull`).

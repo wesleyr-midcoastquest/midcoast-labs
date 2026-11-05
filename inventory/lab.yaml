@@ -15,7 +15,7 @@
 
 version: "1.4"                                   # CHANGED: 1.3 -> 1.4 (fixes from the first real build)
                                                  # Compatibility number; changes rarely (see CHANGELOG.md).
-release: LAB-261105-01                           # ADDED: release name, LAB-<YYMMDD>-<NN>; every merged change gets a new one
+release: LAB-261105-02                           # ADDED: release name, LAB-<YYMMDD>-<NN>; every merged change gets a new one
 
 environment:
   name: MidCoast-Lab

@@ -222,3 +222,19 @@ To keep "everything else consistent":
 - **Existing `MidCoast-Lab` pool or `terraform-prov@pve`** on your cluster: from an
   earlier attempt at this lab, the setup script updates them in place. From something
   else, stop: one lab per cluster.
+
+## Starting over
+
+To rebuild a site from scratch, remove it from Proxmox first. As root on the lab's node:
+
+```bash
+bash proxmox-teardown.sh --vmid-base <vmid_base> --dry-run   # what it would remove
+bash proxmox-teardown.sh --vmid-base <vmid_base>             # asks you to type DESTROY
+```
+
+(`setup/proxmox/proxmox-teardown.sh`; copy it to the node like `proxmox-setup.sh`. It needs
+no site kit.) It keeps your ISOs, and backups unless you add `--include-backups`. It only
+removes the lab's own VMs in its VMID block; anything else there is listed and left alone.
+Then: remove the lab's machines in the Tailscale admin console, save anything you want
+from the old MGMT (your `site.yaml`; the vault, if you'll need an old secret), and start
+again from step 1.
