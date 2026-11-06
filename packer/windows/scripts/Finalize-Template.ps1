@@ -1,6 +1,16 @@
-# Finalize-Template.ps1: last build step. Clean up, enable Cloudbase-Init,
-# then sysprep /generalize. Sysprep uses /quit so this WinRM session
-# survives; Packer then stops the VM and converts it to a template.
+<#
+.SYNOPSIS
+    Packer provisioner, last step: clean up, enable Cloudbase-Init, sysprep /generalize.
+
+.DESCRIPTION
+    Checks the staged files are there, records template provenance, removes
+    per-user packages that make sysprep fail, refuses a BitLocker-encrypted
+    image, cleans temp files and the component store, forgets the build VM's
+    DHCP lease (so clones ask for a fresh one), then runs sysprep /generalize
+    /oobe /quit, up to three times, removing a package sysprep names as the
+    blocker between tries. /quit keeps this WinRM session alive; Packer then
+    stops the VM and converts it to a template.
+#>
 $ErrorActionPreference = 'Stop'
 
 foreach ($f in @(

@@ -24,9 +24,11 @@ you'll need.
 3. **The checklist at the end of this README**: get the repo, fill in `site.yaml`, check
    it, and generate your **site kit**.
 4. **`RUNBOOK.md`**, in your site kit: the build itself, from an empty Proxmox node to a
-   working lab. It's [docs/mgmt-00.md](docs/mgmt-00.md) with your values filled in.
+   working lab, and how to start over. It's [docs/runbook.md](docs/runbook.md) with your
+   values filled in.
 5. **Later**, as the lab ages: [docs/replace-mgmt.md](docs/replace-mgmt.md) and
-   [docs/replace-dc.md](docs/replace-dc.md).
+   [docs/replace-dc.md](docs/replace-dc.md). Every script and its switches:
+   [docs/scripts.md](docs/scripts.md).
 
 Two files hold everything about a lab. `inventory/lab.yaml` is the **product**: roles,
 sizes, names, OUs, groups. It's the same for everyone; you don't edit it.
@@ -42,8 +44,9 @@ other values that differ per installation. You make it from `inventory/site.temp
 **2. First build (about half a day, mostly unattended), following the runbook:**
 - **Proxmox setup**: a script creates the lab's Proxmox account, pool and permissions, and
   **MGMT-00**, the starter management machine, with Windows installed unattended.
-- **MGMT-00**: you install its toolchain (Git, Terraform, Packer, KeePassXC and the rest)
-  and create the **vault**, where every lab password and key lives.
+- **MGMT-00**: four scripts install its toolchain (Git, Terraform, Packer, KeePassXC and
+  the rest), put the repo in place, create the **vault**, where every lab password and key
+  lives, and later join it to the domain.
 - **Templates**: Packer builds a Windows Server 2022 and a Windows 11 template.
 - **Phase 1**: two domain controllers are cloned from the Server template and set up as a
   new forest:
@@ -77,19 +80,10 @@ its compatibility number (`version`). Don't change `lab.yaml` or anything else o
 your `site.yaml` and ledger for your own site: if something doesn't work for you, it's a
 product change, so send it back to the repo's owner and every site gets it.
 
-**5. Start over.** To rebuild from nothing, first save what you want from the old MGMT
-(your `site.yaml`; the vault, if you'll need an old secret). Then copy
-`setup/proxmox/proxmox-teardown.sh` to the lab's node and, as root:
-
-```bash
-bash proxmox-teardown.sh --vmid-base <vmid_base> --dry-run   # what it would remove
-bash proxmox-teardown.sh --vmid-base <vmid_base>             # asks you to type DESTROY
-```
-
-It removes only the lab's own VMs in its VMID block (anything else there is listed and
-left alone), with the lab's Proxmox pool, user and role. It keeps your ISOs, and backups
-unless you add `--include-backups`. Remove the lab's machines in the Tailscale admin
-console too, then begin again at the checklist.
+**5. Start over.** `setup/proxmox/proxmox-teardown.sh` removes a site from Proxmox
+(only the lab's own VMs, pool, user and role; your ISOs stay) so it can be built again.
+The commands, with your site's values, are at the end of your `RUNBOOK.md` ("Starting
+over").
 
 Not built yet: Phase 2 (a Windows 11 end-user workstation) and Phase 3 (Entra Connect).
 
@@ -150,11 +144,11 @@ The figures are per lab, on one node. Proxmox clustering isn't required.
 | **ISOs** | Windows Server 2022 evaluation, Windows 11 Enterprise evaluation, `virtio-win.iso` |
 | **A domain you own** | The AD forest is a subdomain of it (`ad.<domain>`); it's also the UPN suffix |
 | **Microsoft 365 / Entra tenant** with that domain verified | UPN suffix now; Entra Connect in Phase 3 (E5 developer licences are fine) |
-| **Git** (on MGMT) | The repo on MGMT must be a git repository: the pipeline commits the ledger (`instances.yaml`) after every run, and every MGMT replacement hands over the full history. MGMT's toolchain installs Git, and the runbook sets the repo up. Not needed on your workstation |
+| **Git** (on MGMT) | The repo on MGMT must be a git repository: the pipeline commits the ledger (`instances.yaml`) after every run, and every MGMT replacement hands over the full history. MGMT's toolchain installs Git, and `Initialize-LabRepo.ps1` (runbook step 5) sets the repo up, with your git name and e-mail taken from `site.yaml`'s administrator. Not needed on your workstation, and no remote is needed |
 | **A private git remote** (recommended) | GitHub, GitLab, or Gitea/Forgejo on another machine. Without one, the only copies of the ledger and its history live on MGMT. The repo holds no secrets, but keep it private: it maps your lab |
 | **A workstation with PowerShell 7 and `powershell-yaml`** | For checking your `site.yaml` and generating the site kit before MGMT-00 exists (Windows, macOS or Linux) |
 | **KeePassXC** | Installed on MGMT by the toolchain. Back up the `.kdbx` and its master password **outside the lab**: without them the lab's secrets are gone |
-| Tailscale (optional, recommended) | Remote access to the lab. Either a subnet route for the lab subnet, or **every lab machine on your tailnet**: set `tailscale.enabled: true` in `site.yaml` and give `Initialize-LabVault` a **reusable, tagged, non-ephemeral** auth key (leave *Ephemeral* off: an ephemeral device drops off the tailnet when it's offline for a while and can't rejoin, since the key is deleted from each machine after setup). It lives in the vault, never in the repo. Each machine then joins during its setup with `--accept-routes=false --accept-dns=false`, its Tailscale adapter kept out of DNS (DCs keep AD and DNS on their lab address), and Remote Desktop allowed on that adapter; use Tailscale's access rules for who may connect. The key is also kept on each machine as Tailscale's `AuthKey` policy (readable by SYSTEM and Administrators only), and a watchdog task (`MidCoastLab-Tailscale`, every 15 minutes) logs it back in if a restart or update logged it out; scope the tag's access rules to what the lab needs. Retiring a machine logs it out of the tailnet. Auth keys expire: replace it in the vault (`Set-Secret`) when it does. Not a substitute for the direct route above |
+| Tailscale (optional, recommended) | Remote access to the lab. Either a subnet route for the lab subnet, or **every lab machine on your tailnet**: set `tailscale.enabled: true` in `site.yaml` and give `Initialize-LabVault` a **reusable, tagged, non-ephemeral** auth key (MGMT-00 can also join during its unattended install with a separate **one-time** key you type into `proxmox-setup.sh`, so it's reachable before anything else exists) (leave *Ephemeral* off: an ephemeral device drops off the tailnet when it's offline for a while and can't rejoin, since the key is deleted from each machine after setup). It lives in the vault, never in the repo. Each machine then joins during its setup with `--accept-routes=false --accept-dns=false`, its Tailscale adapter kept out of DNS (DCs keep AD and DNS on their lab address), and Remote Desktop allowed on that adapter; use Tailscale's access rules for who may connect. The key is also kept on each machine as Tailscale's `AuthKey` policy (readable by SYSTEM and Administrators only), and a watchdog task (`MidCoastLab-Tailscale`, every 15 minutes) logs it back in if a restart or update logged it out; scope the tag's access rules to what the lab needs. Retiring a machine logs it out of the tailnet. Auth keys expire: replace it in the vault (`Set-Secret`) when it does. Not a substitute for the direct route above |
 
 ### Licensing and time
 
@@ -168,9 +162,10 @@ The figures are per lab, on one node. Proxmox clustering isn't required.
 
 ## Reference: templates
 
-`./orchestration/Build-LabTemplate.ps1 [-Template windows_11]` builds a new **version**
-(`WIN2022-TEMPLATE-<YYMMDD>-<NN>`) at the next free VMID of the template's range and makes
-it current. Existing VMs stay linked clones of the version they were built from; the next
+`./orchestration/Build-LabTemplate.ps1 -Template <key>` (`windows_server_2022` or
+`windows_11`: the keys under `templates:` in `lab.yaml`, so a template added later is
+built the same way) builds a new **version** (`WIN2022-TEMPLATE-<YYMMDD>-<NN>`) at the
+next free VMID of the template's range and makes it current. Existing VMs stay linked clones of the version they were built from; the next
 VM of that role (a rotation) gets the new one. A superseded version is deleted
 automatically once no VM uses it. Rebuild monthly, or after critical updates, and commit
 `inventory/instances.yaml` afterwards (the ledger lists the versions).
@@ -182,6 +177,14 @@ automatically once no VM uses it. Rebuild monthly, or after critical updates, an
 **MGMT:** `NET-001/002`, `MGMT-001…007`, `TS-001`, `MEM-001`, `EVAL-001`.
 Severity and recovery for each: `platform/validation/catalog.psd1`. Reports:
 `C:\ProgramData\MidCoastLab\Logs\Validation\latest.json` on each machine.
+
+## Reference: the vault
+
+Every lab secret lives in the KeePass vault on the active MGMT (`C:\MidCoastLab\MidCoastLab.kdbx`,
+registered as the SecretManagement vault `MidCoastLab` for each admin account). Pipeline
+scripts ask for its master password when it's locked (a new window, or after a while); to
+unlock it ahead of time: `Unlock-SecretVault -Name MidCoastLab`. One entry by hand:
+`Get-Secret -Vault MidCoastLab -Name <entry> -AsPlainText`.
 
 ## Reference: what's where
 
@@ -214,17 +217,21 @@ setup/
   New-LabSiteKit.ps1                   writes out/site-kit/<site>/ (RUNBOOK.md, proxmox-setup.sh)
   proxmox/proxmox-setup.sh             template; run the site kit's copy, not this one
   proxmox/proxmox-teardown.sh          removes a site from Proxmox (keeps ISOs); run as-is
-  mgmt/Join-LabTailnet.ps1             MGMT-00 joins the tailnet (site.yaml tailscale.enabled)
-  mgmt/Install-MgmtTools.ps1           MGMT toolchain for the hand-build (wraps platform/roles/mgmt-tools.ps1)
-  mgmt/Initialize-LabVault.ps1         KeePass vault + generated secrets
+  mgmt/Install-MgmtTools.ps1           MGMT-00 step 5: toolchain (wraps platform/roles/mgmt-tools.ps1)
+  mgmt/Initialize-LabRepo.ps1          MGMT-00 step 5: repo at C:\MidCoastLab\repo, git init, git identity
+  mgmt/Initialize-LabVault.ps1         step 6, and once per account/MGMT: create/register the vault, generate secrets
+  mgmt/Join-LabTailnet.ps1             step 6: MGMT-00 joins the tailnet (site.yaml tailscale.enabled)
+  mgmt/Join-LabDomain.ps1              step 8: MGMT-00 joins the domain, post-join rules, restart
 tools/
   Export-LabRelease.ps1                exports a release (no site, no ledger) for the public repo
+  New-LabScriptReference.ps1           regenerates docs/scripts.md from the scripts' own help
 CHANGELOG.md          releases (LAB-<YYMMDD>-<NN>, tags match) and the compatibility version
 docs/
   NEW-SITE.md         what to collect, and how to fill in site.yaml
-  mgmt-00.md          first-build runbook (template; the site kit fills it in as RUNBOOK.md)
+  runbook.md          first-build runbook (template; the site kit fills it in as RUNBOOK.md)
   replace-mgmt.md     replacing MGMT (about every two months)
   replace-dc.md       replacing a DC (before its 180 days run out)
+  scripts.md          every script, its parameters and where it runs (generated)
   architecture.md, decisions.md   the design, and why
 ```
 

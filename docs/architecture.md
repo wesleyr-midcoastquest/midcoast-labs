@@ -1,7 +1,12 @@
 # MidCoast Lab Architecture Program
 ## Print-Ready Executive Export
-### Version 1.4
+### Version 1.5
 
+> v1.5 (Nov 2026): MGMT-00 is set up by scripts (repo, vault, domain join, post-join rules)
+> and may join the tailnet during its install with a one-time key; git identity comes from
+> `site.yaml`; `Build-LabTemplate -Template` takes any inventory template key; every script
+> is listed in docs/scripts.md. Rationale: docs/decisions.md (v1.5 sections).
+>
 > v1.4 (Nov 2026): standard accounts live in the `People` OU (`Users` clashes with the
 > built-in container); fixes from the first real build (docs/decisions.md, CHANGELOG.md).
 >
@@ -775,7 +780,7 @@ Management
 W11
 ```
 
-(MGMT is not a Phase 2 build: the hand-built MGMT-00 is joined to the domain by hand
+(MGMT is not a Phase 2 build: the hand-built MGMT-00 is joined to the domain by `setup/mgmt/Join-LabDomain.ps1`
 after Phase 1, and later MGMTs are built by MGMT rotation, already domain-joined.)
 
 Validation includes:

@@ -5,12 +5,13 @@
 #           Medium   = warning
 #           Low      = informational
 #
-# Recovery actions. The orchestrator reports them with each failure; acting on
-# them is manual for now (RebuildDC will be automated with DC rotation):
-#   RebuildDC        rotate this DC out and build a replacement (DC rotation: next stage)
-#   Rebuild          rotate this machine out (DC: as RebuildDC; MGMT: Invoke-LabMgmtRotation)
+# Recovery actions. The orchestrator reports them with each failure; a person
+# runs the matching pipeline command:
+#   RebuildDC        replace this DC:   Invoke-LabDcRotation -Stage Add -Replace <name>, then -Stage Retire
+#   Rebuild          replace this machine (DC: as RebuildDC; MGMT: Invoke-LabMgmtRotation -Stage Prepare)
 #   RerunBootstrap   fix the cause, then re-run with -Retry
-#                    (DC: Invoke-LabPhase -Retry; MGMT: Invoke-LabMgmtRotation -Stage Prepare -Retry)
+#                    (DC: Invoke-LabPhase -Retry or Invoke-LabDcRotation -Stage Add -Retry;
+#                     MGMT: Invoke-LabMgmtRotation -Stage Prepare -Retry)
 #   Review           a person decides
 @{
     # ── Network / identity ─────────────────────────────────────────────

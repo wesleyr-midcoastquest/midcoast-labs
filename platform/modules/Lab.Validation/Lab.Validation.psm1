@@ -61,6 +61,43 @@ function Invoke-LabCheck {
     }
 }
 
+function Invoke-LabCommonChecks {
+    # The checks every lab machine runs, whatever its role: address, name, the
+    # tailnet (when enabled), the balloon service and the evaluation clock.
+    # Role validations append their own results to these.
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] $Metadata,
+        [Parameter(Mandatory)] $Inventory
+    )
+    $results = @()
+    $results += Invoke-LabCheck -Id 'NET-001' -Check {
+        $ip = Get-NetIPAddress -AddressFamily IPv4 -IPAddress $Metadata.ipv4 -ErrorAction SilentlyContinue
+        @{ Passed = [bool] ($ip -and $ip.PrefixOrigin -eq 'Manual'); Detail = "expected $($Metadata.ipv4) (manual)" }
+    }
+    $results += Invoke-LabCheck -Id 'NET-002' -Check {
+        @{ Passed = ($env:COMPUTERNAME -eq $Metadata.hostname.ToUpper()); Detail = "is $env:COMPUTERNAME, expected $($Metadata.hostname)" }
+    }
+    $results += Invoke-LabCheck -Id 'TS-001' -Check {
+        # site.yaml tailscale.enabled: joined and connected.
+        if (-not $Inventory.tailscale.enabled) { return @{ Passed = $true; Detail = 'not enabled for this site' } }
+        $st = Get-LabTailscaleStatus
+        if (-not $st) { return @{ Passed = $false; Detail = 'Tailscale not installed, or not answering' } }
+        @{ Passed = ($st.BackendState -eq 'Running'); Detail = "state $($st.BackendState); $(@($st.TailscaleIPs) -join ', ')" }
+    }
+    $results += Invoke-LabCheck -Id 'MEM-001' -Check {
+        # Without it Proxmox can't balloon this VM (memory_min_mb in lab.yaml).
+        $svc = Get-Service -Name BalloonService -ErrorAction SilentlyContinue
+        @{ Passed = ($svc -and $svc.Status -eq 'Running'); Detail = if ($svc) { "BalloonService $($svc.Status)" } else { 'BalloonService not installed' } }
+    }
+    $results += Invoke-LabCheck -Id 'EVAL-001' -Check {
+        $days = (Get-LabRuntimeMetadata).EvaluationDaysLeft
+        if ($null -eq $days) { return @{ Passed = $true; Detail = 'not an evaluation license' } }
+        @{ Passed = ($days -gt 30); Detail = "$days days left"; Data = $days }
+    }
+    $results
+}
+
 function Complete-LabValidationReport {
     [CmdletBinding()]
     param(
@@ -108,4 +145,4 @@ function Format-LabValidationReport {
 }
 
 Export-ModuleMember -Function Import-LabValidationCatalog, Get-LabValidationCatalogEntry,
-    Invoke-LabCheck, Complete-LabValidationReport, Format-LabValidationReport
+    Invoke-LabCheck, Invoke-LabCommonChecks, Complete-LabValidationReport, Format-LabValidationReport

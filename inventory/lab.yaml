@@ -13,9 +13,9 @@
 # dates, sequences and DC/MGMT slots) lives in inventory/instances.yaml, a ledger
 # the pipeline writes. Never hand-edit the ledger.
 
-version: "1.4"                                   # CHANGED: 1.3 -> 1.4 (fixes from the first real build)
+version: "1.5"                                   # CHANGED: 1.4 -> 1.5 (MGMT-00 setup scripts, one-time tailnet join at install)
                                                  # Compatibility number; changes rarely (see CHANGELOG.md).
-release: LAB-261105-03                           # ADDED: release name, LAB-<YYMMDD>-<NN>; every merged change gets a new one
+release: LAB-261105-04                           # ADDED: release name, LAB-<YYMMDD>-<NN>; every merged change gets a new one
 
 environment:
   name: MidCoast-Lab

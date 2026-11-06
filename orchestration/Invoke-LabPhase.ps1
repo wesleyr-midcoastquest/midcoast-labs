@@ -59,7 +59,6 @@ try {
     # Record the hand-built MGMT-00 the first time the pipeline runs.
     $instances = @(Register-LabInitialInstances -Inventory $inv -Instances $instances -NoSave:$PlanOnly)
     $ad        = $inv.identity.active_directory
-    $netbios   = $ad.netbios
     $dcDef     = Get-LabRoleDefinition -Inventory $inv -Role 'DC'
     $want      = [int] $dcDef.instances
     $sec       = $inv.secrets.entries
@@ -119,9 +118,7 @@ try {
         Invoke-LabTerraform -Inventory $inv -Command apply | Out-Host
         $tf = (Invoke-LabTerraform -Inventory $inv -Command output).servers.value
 
-        # ── Credentials (read once from KeePass) ─────────────────────────────
-
-        # Secrets each DC mode needs.
+        # Secrets each DC mode needs (read from KeePass as each DC is deployed).
         $accountNames = @($inv.identity.administrative_model.administrators | ForEach-Object { $_.username; "$($_.username)$($inv.identity.administrative_model.account_suffix)" }) +
                         @($inv.identity.service_accounts | ForEach-Object name)
         function Get-DcSecrets([string] $Mode) {
@@ -194,8 +191,12 @@ try {
     }
     if ($failed) { throw 'Phase 1 final validation has Critical failures; see the reports above.' }
 
-    Write-Host "`nPhase 1 complete. Commit inventory/instances.yaml." -ForegroundColor Green
-    Write-Host "Next: point MGMT-00's DNS at $($allIps -join ', ') and join it to $($ad.domain) (docs/mgmt-00.md)."
+    Write-Host "`nPhase 1 complete. DCs: $($allIps -join ', ')." -ForegroundColor Green
+    Write-LabCommitHint -Message 'Phase 1'
+    $mgmt = @($instances | Where-Object { $_.role -eq 'MGMT' -and $_.origin -eq 'manual' })[0]
+    if ($mgmt) {
+        Write-Host "Next (runbook step 8): join $($mgmt.name) to $($ad.domain), in an elevated PowerShell 7:  ./setup/mgmt/Join-LabDomain.ps1"
+    }
 } finally {
     Stop-Transcript | Out-Null
 }

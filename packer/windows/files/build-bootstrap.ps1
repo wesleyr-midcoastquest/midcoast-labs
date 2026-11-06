@@ -1,6 +1,14 @@
-# build-bootstrap.ps1: runs once at first logon of the BUILD VM only.
-# Installs the VirtIO guest tools (includes the QEMU guest agent Packer uses
-# to find the VM's address) and opens WinRM/HTTPS for Packer.
+<#
+.SYNOPSIS
+    First-logon script of the Packer BUILD VM (from the generated answer CD).
+
+.DESCRIPTION
+    Runs once, inside the build VM, before Packer connects: installs the VirtIO
+    guest tools (with the QEMU guest agent Packer uses to find the VM's address
+    and the balloon service), keeps a Windows client image sysprep-safe and
+    unencrypted, and opens a build-only WinRM/HTTPS listener for Packer.
+    Initialize-LabRemoting.ps1 replaces that listener on each clone's first boot.
+#>
 $ErrorActionPreference = 'Stop'
 Start-Transcript -Path C:\Windows\Temp\build-bootstrap.log -Append
 

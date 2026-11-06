@@ -23,6 +23,13 @@
 #     no first-run screens, then guest tools, static address, time zone, name and
 #     Remote Desktop. The script starts it, waits for the install to finish (about
 #     20-40 minutes), ejects the install media and deletes the answer CD.
+#   - with site.yaml tailscale.enabled, MGMT-00 can join your tailnet during that
+#     install, so you can reach it before anything else exists: the script asks
+#     for a ONE-TIME (single-use, tagged, not ephemeral) auth key, or takes it from
+#     the TAILSCALE_AUTHKEY environment variable; leave it empty to skip. The key
+#     is never written to the site kit; it rides on the answer CD (root-only, shredded
+#     after the install) and is used once. Runbook step 6 later switches MGMT-00 to the
+#     vault's reusable key, like every other lab machine.
 #   - every secret it creates (API tokens, MGMT-00's local password) is printed and
 #     kept in a root-only file until you've copied it (shred it afterwards)
 #
@@ -38,7 +45,7 @@ set -euo pipefail
 for v in NODE POOL USER_ID ROLE TOKENS TEMPLATE_STORAGE VM_STORAGE ISO_STORAGE BRIDGE CLONE_MODE LAB_VMIDS ISO_FILES \
          MGMT00_VMID MGMT00_NAME MGMT00_CORES MGMT00_MEMORY MGMT00_DISK_GB MGMT00_ISO VIRTIO_ISO \
          MGMT00_IP MGMT00_PREFIX MGMT00_GATEWAY MGMT00_DNS MGMT00_TIME_ZONE MGMT00_IMAGE_INDEX MGMT00_DRIVER_OS \
-         MGMT00_LOCAL_USER LAB_SUBNET \
+         MGMT00_LOCAL_USER LAB_SUBNET TAILSCALE_ENABLED \
          VAULT_NAME TOKEN_SECRET_NAMES; do
   [[ -n "${!v:-}" ]] || { echo "Missing site value $v; regenerate the site kit." >&2; exit 2; }
 done
@@ -224,6 +231,19 @@ if qm status "$MGMT00_VMID" >/dev/null 2>&1; then
   # An unattended install an earlier run started and didn't see finish.
   if qm config "$MGMT00_VMID" | grep -qF "$ANSWER_ISO"; then MGMT00_STARTED=1; fi
 elif [[ "$CREATE_MGMT00" == "1" ]]; then
+  # ── Tailscale: a one-time key, typed now, used once by the install ──
+  TS_KEY=""
+  if [[ "$TAILSCALE_ENABLED" == "1" ]]; then
+    if [[ -n "${TAILSCALE_AUTHKEY:-}" ]]; then
+      TS_KEY="$TAILSCALE_AUTHKEY"
+    else
+      echo "  site.yaml has tailscale.enabled: $MGMT00_NAME can join your tailnet during its install."
+      echo "  Make a ONE-TIME auth key (Tailscale admin console > Settings > Keys: reusable OFF, tagged, ephemeral OFF)."
+      read -rs -p "  Paste it (or press Enter to skip; runbook step 6 joins later): " TS_KEY; echo
+    fi
+    if [[ -n "$TS_KEY" && "$TS_KEY" != tskey-auth-* ]]; then echo "  That doesn't look like a Tailscale auth key (tskey-auth-...); skipping." >&2; TS_KEY=""; fi
+    [[ -n "$TS_KEY" ]] && echo "  $MGMT00_NAME will join the tailnet as $(tr '[:upper:]' '[:lower:]' <<< "$MGMT00_NAME")"
+  fi
   # ── The answer CD ──
   command -v genisoimage >/dev/null 2>&1 || { echo "  installing genisoimage"; apt-get install -y -qq genisoimage >/dev/null; }
   ISO_PATH="$(pvesm path "$ISO_STORAGE:iso/$ANSWER_ISO")"
@@ -344,12 +364,16 @@ print("".join(pw))')"
 </unattend>
 XML
   # First-logon setup. Values go in a JSON file next to it, so the script itself is literal.
-  python3 - "$WORK/mgmt00.json" <<PY
-import json, sys
+  # The one-time Tailscale key goes in too (the CD is root-only and shredded after
+  # the install; the guest reads it from the CD and never copies it to disk).
+  TS_KEY="$TS_KEY" python3 - "$WORK/mgmt00.json" <<PY
+import json, os, sys
 json.dump({"name": "$MGMT00_NAME", "user": "$MGMT00_LOCAL_USER", "ip": "$MGMT00_IP", "prefix": int("$MGMT00_PREFIX"),
            "gateway": "$MGMT00_GATEWAY", "dns": "$MGMT00_DNS",
-           "rdp_from": [x for x in "$LAB_SUBNET ${RDP_FROM:-}".split() if x]}, open(sys.argv[1], "w"), indent=2)
+           "rdp_from": [x for x in "$LAB_SUBNET ${RDP_FROM:-}".split() if x],
+           "tailscale_authkey": os.environ.get("TS_KEY", "")}, open(sys.argv[1], "w"), indent=2)
 PY
+  unset TS_KEY
   cat > "$WORK/setup-mgmt00.ps1" <<'PS1'
 # MidCoast Lab: first-logon setup of MGMT-00, run once by the answer file.
 $ErrorActionPreference = 'Stop'
@@ -391,6 +415,30 @@ try {
         Set-NetFirewallRule -RemoteAddress @($cfg.rdp_from) -Profile Any -Enabled True
     "Remote Desktop on, from $(@($cfg.rdp_from) -join ', ')"
 
+    # Tailscale, with the one-time key from the answer CD (never copied to disk).
+    # Same flags as every lab machine; the policy and watchdog come with the
+    # reusable key in runbook step 6 (Join-LabTailnet.ps1).
+    if ($cfg.tailscale_authkey) {
+        try {
+            [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+            $msi = Join-Path $env:TEMP 'tailscale-setup.msi'
+            Invoke-WebRequest -Uri 'https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi' -OutFile $msi -UseBasicParsing
+            $p = Start-Process -FilePath msiexec.exe -ArgumentList "/i `"$msi`" /quiet /norestart TS_UNATTENDEDMODE=always" -Wait -PassThru
+            Remove-Item -Path $msi -Force -ErrorAction SilentlyContinue
+            if ($p.ExitCode -notin 0, 3010) { throw "Tailscale installer exit $($p.ExitCode)" }
+            $exe = Join-Path $env:ProgramFiles 'Tailscale\tailscale.exe'
+            $deadline = (Get-Date).AddMinutes(2)
+            while (-not (Get-NetAdapter -Name 'Tailscale' -ErrorAction SilentlyContinue) -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 3 }
+            Set-DnsClient -InterfaceAlias 'Tailscale' -RegisterThisConnectionsAddress $false -ErrorAction SilentlyContinue
+            $out = & $exe up "--authkey=$($cfg.tailscale_authkey)" --unattended --accept-routes=false --accept-dns=false "--hostname=$($cfg.name.ToLower())" 2>&1
+            if ($LASTEXITCODE -ne 0) { throw "tailscale up exit $LASTEXITCODE`: $out" }
+            New-NetFirewallRule -Name 'MidCoastLab-RDP-Tailscale' -DisplayName 'MidCoast Lab Remote Desktop (Tailscale adapter)' `
+                -Direction Inbound -Protocol TCP -LocalPort 3389 -InterfaceAlias 'Tailscale' `
+                -RemoteAddress '100.64.0.0/10', 'fd7a:115c:a1e0::/48' -Action Allow -Profile Any | Out-Null
+            "Tailscale: joined as $($cfg.name.ToLower()); Remote Desktop allowed on the Tailscale adapter"
+        } catch { Write-Warning "Tailscale skipped (join later with setup/mgmt/Join-LabTailnet.ps1): $($_.Exception.Message)" }
+    }
+
     # The answer file's copies on disk carry the (encoded) password.
     Remove-Item -Path 'C:\Windows\Panther\unattend.xml', 'C:\Windows\Panther\Unattend\unattend.xml', 'C:\Windows\Panther\autounattend.xml' -Force -ErrorAction SilentlyContinue
     Set-Content -Path (Join-Path $root 'mgmt00-setup.done') -Value (Get-Date -Format o)
@@ -404,6 +452,8 @@ PS1
   rm -f "$ISO_PATH"
   genisoimage -quiet -J -r -V MGMT00ANSWER -o "$ISO_PATH" "$WORK"
   chmod 600 "$ISO_PATH"
+  # The work folder held the encoded password and (maybe) the Tailscale key.
+  find "$WORK" -type f -exec shred -u {} + 2>/dev/null || true
   rm -rf "$WORK"
   ( umask 077; echo "$MGMT00_NAME local admin $MGMT00_LOCAL_USER : $LOCAL_PW" >> "$SECRETS_FILE" )
   unset LOCAL_PW PW_B64
@@ -433,7 +483,8 @@ fi
 
 cat <<EOF
 
-Done. Initialize-LabVault.ps1 asks for both token secrets; they go in vault $VAULT_NAME as:
+Done. Next: RUNBOOK.md step 4 (sign in to $MGMT00_NAME). Initialize-LabVault.ps1 (step 6) asks
+for both token secrets; they go in vault $VAULT_NAME as:
   $TOKEN_SECRET_NAMES
 
 Granted on /pool/$POOL, the lab storages, /sdn/zones/localnetwork/$BRIDGE:

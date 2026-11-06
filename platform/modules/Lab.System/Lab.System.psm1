@@ -240,6 +240,117 @@ try {
     }
 }
 
+# ── Remote Desktop ────────────────────────────────────────────────────────
+# Shared by the DC and MGMT roles and their validations, so every lab machine
+# turns it on the same way and is checked the same way.
+
+function Enable-LabRemoteDesktop {
+    # Turns Remote Desktop on (Network Level Authentication on), the service to
+    # automatic and started, and the built-in firewall rules open to -RemoteAddress
+    # only. The rules are found by their language-independent group; none found is
+    # an error, not silence. Who may sign in is not changed here.
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] [string[]] $RemoteAddress)
+    # The Terminal Services provider (as Settings does) when it's available; the
+    # registry values are what the service reads either way.
+    $ts = Get-CimInstance -Namespace 'root\cimv2\TerminalServices' -ClassName Win32_TerminalServiceSetting -ErrorAction SilentlyContinue
+    if ($ts) { $null = Invoke-CimMethod -InputObject $ts -MethodName SetAllowTSConnections -Arguments @{ AllowTSConnections = 1; ModifyFirewallException = 0 } }
+    Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name fDenyTSConnections -Value 0
+    Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name UserAuthentication -Value 1
+    Set-Service -Name TermService -StartupType Automatic
+    Start-Service -Name TermService
+    $rules = @(Get-LabRemoteDesktopRules)
+    if ($rules.Count -eq 0) { throw 'No built-in Remote Desktop firewall rules (RemoteDesktop-UserMode-In-*) found.' }
+    $from = @($RemoteAddress | Where-Object { $_ } | Select-Object -Unique)
+    $rules | Set-NetFirewallRule -RemoteAddress $from -Profile Any -Enabled True
+    "Remote Desktop enabled from $($from -join ', ') ($(($rules | ForEach-Object Name) -join ', '))"
+}
+
+function Get-LabRemoteDesktopRules {
+    # The built-in inbound Remote Desktop rules, by group ID (any display language).
+    [CmdletBinding()]
+    param()
+    @(Get-NetFirewallRule -Group '@FirewallAPI.dll,-28752' -Direction Inbound -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -like 'RemoteDesktop-UserMode-In-*' })
+}
+
+function Test-LabRemoteDesktop {
+    # Validation: on, listening on 3389, firewall rule enabled. Returns the
+    # @{ Passed; Detail } shape Invoke-LabCheck takes (RDP-001, MGMT-007).
+    [CmdletBinding()]
+    param()
+    $problems = @()
+    if ((Get-ItemProperty 'HKLM:\System\CurrentControlSet\Control\Terminal Server').fDenyTSConnections -ne 0) { $problems += 'connections denied' }
+    $svc = Get-Service -Name TermService -ErrorAction SilentlyContinue
+    if (-not $svc -or $svc.Status -ne 'Running') { $problems += "TermService $(if ($svc) { $svc.Status } else { 'missing' })" }
+    if (-not (Get-NetTCPConnection -LocalPort 3389 -State Listen -ErrorAction SilentlyContinue)) { $problems += 'nothing listening on 3389' }
+    $rules = @(Get-LabRemoteDesktopRules | Where-Object { $_.Enabled -eq 'True' })
+    if ($rules.Count -eq 0) { $problems += 'firewall rule not enabled' }
+    $scope = @($rules | Get-NetFirewallAddressFilter | ForEach-Object RemoteAddress) | Select-Object -Unique
+    @{ Passed = ($problems.Count -eq 0); Detail = if ($problems) { $problems -join '; ' } else { "from $($scope -join ', ')" } }
+}
+
+function Grant-LabRemoteDesktopGroup {
+    # Lets a group use Remote Desktop (local "Remote Desktop Users", any language).
+    # Idempotent; returns a status line.
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] [string] $Group)
+    $rdpUsers = Get-LocalGroup -SID 'S-1-5-32-555'
+    if (Get-LocalGroupMember -Group $rdpUsers -ErrorAction SilentlyContinue | Where-Object Name -eq $Group) { return "$Group already has Remote Desktop" }
+    Add-LocalGroupMember -Group $rdpUsers -Member $Group
+    "Granted Remote Desktop to $Group"
+}
+
+# ── The MGMT lab folder (C:\MidCoastLab) ──────────────────────────────────
+# Set once on the hand-built MGMT-00 after its domain join, and on every
+# pipeline-built MGMT at handover: identical rules, one implementation.
+
+function Set-LabMgmtFolderAcl {
+    # Only SYSTEM, Administrators and the lab's Tier 0 admin group may use
+    # C:\MidCoastLab (repo, Terraform state, vault). The group is granted directly
+    # because UAC strips Administrators from a non-elevated token but leaves
+    # custom groups alone, so an admin's -a account can use the repo without
+    # "Run as administrator". The protected ACL goes on the root only and
+    # everything below is reset to inherit it: one "/inheritance:r /grant:r ... /T"
+    # pass left every file with an empty ACL on the first real rotation.
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [string] $Group,            # NETBIOS\SG-ROLE-DomainAdmins
+        [string] $Root = 'C:\MidCoastLab',
+        # A file deep in the tree that must end up granting the group (proof the reset worked).
+        [string] $ProbePath
+    )
+    try { $sid = ([Security.Principal.NTAccount] $Group).Translate([Security.Principal.SecurityIdentifier]).Value }
+    catch { throw "Can't resolve $Group here: $($_.Exception.Message)" }
+    $out = & icacls.exe $Root /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' "*${sid}:(OI)(CI)F" /Q 2>&1
+    if ($LASTEXITCODE -ne 0) { throw "icacls on $Root failed: $out" }
+    if (Get-ChildItem -Path $Root -Force -ErrorAction SilentlyContinue) {
+        $out = & icacls.exe "$Root\*" /reset /T /C /Q 2>&1
+        if ($LASTEXITCODE -ne 0) { throw "icacls /reset under $Root failed: $out" }
+    }
+    if ($ProbePath -and (Test-Path $ProbePath)) {
+        $sids = @((Get-Acl -Path $ProbePath).Access | ForEach-Object {
+            try { $_.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value } catch { $null } })
+        if ($sids -notcontains $sid) { throw "After locking down $Root, $ProbePath doesn't grant $Group. Check its ACL (icacls)." }
+    }
+    "${Root}: SYSTEM, Administrators and $Group"
+}
+
+function Add-LabGitSafeDirectory {
+    # Git refuses a repo owned by another account ("dubious ownership"): the
+    # repo on a new MGMT was written by the remoting account, on MGMT-00 by the
+    # local admin, and the -a account uses it afterwards. System-wide, so every
+    # account on the machine is covered.
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] [string] $Path)
+    $git = Join-Path $env:ProgramFiles 'Git\cmd\git.exe'
+    if (-not (Test-Path $git)) { throw "git not found at $git." }
+    $dir = $Path.Replace('\', '/')
+    $existing = & $git config --system --get-all safe.directory 2>$null
+    if (@($existing) -notcontains $dir) { & $git config --system --add safe.directory $dir }
+    "git safe.directory: $dir"
+}
+
 function Restart-LabComputer {
     # Records the next stage, then reboots. The startup task resumes bootstrap.
     [CmdletBinding()]
@@ -336,6 +447,38 @@ function Install-LabTailscale {
     "joined the tailnet as $($Hostname.ToLowerInvariant()) ($(@($st.TailscaleIPs) -join ', ')); Remote Desktop allowed on the Tailscale adapter; $wd"
 }
 
+function Join-LabTailnet {
+    # The role scripts' Tailscale step (site.yaml tailscale.enabled): the key
+    # from the delivered secrets, Install-LabTailscale, and for a DC the
+    # single-homing before and the DNS clean-up after (Lab.AD). A failure is a
+    # warning, never a failed build: TS-001 reports it and the lab works
+    # without the tailnet. Returns nothing.
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] $Inventory,
+        [Parameter(Mandatory)] $Metadata,
+        # This machine is a domain controller: keep AD and DNS on the lab address.
+        [switch] $Dc
+    )
+    if (-not $Inventory.tailscale.enabled) { return }
+    try {
+        $key = [System.Net.NetworkCredential]::new('', (Get-LabSecret -Name $Inventory.secrets.entries.tailscale_authkey)).Password
+        if ($Dc) {
+            # Before the adapter gets an address: AD and DNS stay on the lab address.
+            Set-LabDcSingleHomed -Address $Metadata.ipv4 -Domain $Inventory.identity.active_directory.domain
+            Write-LabLog "DNS records and Netlogon limited to $($Metadata.ipv4)"
+        }
+        Write-LabLog "Tailscale: $(Install-LabTailscale -AuthKey $key -Hostname $Metadata.hostname)"
+        if ($Dc) {
+            Start-Sleep -Seconds 30
+            $n = Remove-LabTailnetDnsRecords -Domain $Inventory.identity.active_directory.domain
+            if ($n -gt 0) { Write-LabLog "Removed $n DNS record(s) pointing at a Tailscale address" -Level Warn }
+        }
+    } catch {
+        Write-LabLog "Tailscale skipped: $($_.Exception.Message)" -Level Warn
+    }
+}
+
 function Set-LabTailscalePolicy {
     [CmdletBinding()]
     param([Parameter(Mandatory)] [string] $AuthKey, [Parameter(Mandatory)] [string] $Hostname)
@@ -377,4 +520,7 @@ function Disconnect-LabTailscale {
 Export-ModuleMember -Function Get-LabState, Set-LabState, Initialize-LabSecretStore, Save-LabSecret,
     Get-LabSecret, Get-LabCredential, Remove-LabSecrets, Get-LabPrimaryAdapter, Set-LabStaticAddress,
     Set-LabDnsClient, Test-LabComputerName, Wait-LabCondition, Invoke-LabAsCredential, Restart-LabComputer,
-    Test-LabTailnetAddress, Get-LabTailscaleExe, Get-LabTailscaleStatus, Install-LabTailscale, Set-LabTailscalePolicy, Disconnect-LabTailscale
+    Enable-LabRemoteDesktop, Get-LabRemoteDesktopRules, Test-LabRemoteDesktop, Grant-LabRemoteDesktopGroup,
+    Set-LabMgmtFolderAcl, Add-LabGitSafeDirectory,
+    Test-LabTailnetAddress, Get-LabTailscaleExe, Get-LabTailscaleStatus, Install-LabTailscale, Join-LabTailnet,
+    Set-LabTailscalePolicy, Disconnect-LabTailscale

@@ -8,19 +8,25 @@
 <!-- /TEMPLATE-NOTE -->
 
 This takes a site from an empty Proxmox node to two validated domain controllers, both
-templates, and a pipeline-built MGMT.
-MGMT-00 is the only machine not built by the pipeline: `proxmox-setup.sh` installs its
-Windows unattended, you install its toolchain, and step 9 replaces it with a pipeline-built
-MGMT before the first build is done. 
+templates, and a pipeline-built MGMT. Steps 1–3 are on the router and the Proxmox node;
+from step 4 on you work on MGMT-00, the starter management machine. MGMT-00 is the only
+machine not built by the pipeline: `proxmox-setup.sh` installs its Windows unattended, four
+scripts set it up (steps 5, 6 and 8), and step 9 replaces it with a pipeline-built MGMT
+before the first build is done.
+
+Every command below is meant to be pasted as it is. Where a step says **elevated**, open
+the shell with "Run as administrator"; everywhere else a normal window is right.
 
 | | |
 |---|---|
 | Site | `{{site.name}}` |
 | AD domain / NetBIOS | `{{ad.domain}}` / `{{ad.netbios}}` |
 | Entra domain (UPN suffix) | `{{tenant.domain}}` |
-| Proxmox | node `{{proxmox.node}}`, pool `{{proxmox.pool}}`, bridge `{{proxmox.bridge}}`, storage `{{storage.vm}}` |
+| Proxmox | node `{{proxmox.node}}`, pool `{{proxmox.pool}}`, bridge `{{proxmox.bridge}}`, storage `{{storage.vm}}`, VMIDs `{{proxmox.vmid_base}}`–`{{proxmox.vmid_last}}` |
 | Lab subnet | `{{network.subnet}}`, gateway `{{network.gateway}}`, lab range `{{static.start}}`–`{{static.end}}` |
 | MGMT-00 | VMID `{{mgmt00.vmid}}`, `{{mgmt00.ip}}/{{network.prefix}}`, {{mgmt00.cores}} vCPU, {{mgmt00.memory_gb}} GB, {{mgmt00.disk_gb}} GB, Windows 11 Enterprise evaluation |
+| Repo / vault on MGMT | `{{repo.path}}` / `{{vault.path}}` (vault name `{{vault.name}}`) |
+| Tailscale | `tailscale.enabled: {{tailscale.enabled}}` |
 
 ## 1. Router on the lab bridge
 
@@ -35,8 +41,9 @@ on `{{network.subnet}}`. Configure its DHCP:
   refuses leases it didn't hand out instead of staying silent. Otherwise new clones can
   keep a stale address and collide.
 
-To manage the lab remotely, advertise `{{network.subnet}}` as a Tailscale subnet route
-from a device on `{{proxmox.bridge}}`, and approve it in the Tailscale admin console.
+To manage the lab remotely without putting every machine on your tailnet, advertise
+`{{network.subnet}}` as a Tailscale subnet route from a device on `{{proxmox.bridge}}`, and
+approve it in the Tailscale admin console.
 
 ## 2. Upload the ISOs
 
@@ -87,6 +94,16 @@ answer CD it builds on the node:
   `{{network.gateway}}`, DNS `{{dns.forwarder}}` until step 8), and Remote Desktop from
   `{{network.subnet}}`.
 
+**Tailscale** (`tailscale.enabled: {{tailscale.enabled}}`). When it's `true`, the script
+asks for a Tailscale auth key before it builds the answer CD, so {{mgmt00.name}} joins
+your tailnet during its install and you can reach it over Remote Desktop before anything
+else exists. Make this key in the admin console (Settings, Keys) **one-time**: *Reusable*
+**off**, tagged (e.g. `tag:midcoast-lab`), *Ephemeral* **off**. It's used once, lives only
+on the root-only answer CD (shredded after the install), and is never written to the site
+kit or the repo. Press Enter to skip; step 6 joins {{mgmt00.name}} then. (To skip the
+prompt, export `TAILSCALE_AUTHKEY` before running the script.) The device appears as
+`{{mgmt00.name_lower}}`.
+
 The script waits for all of that (about 20 to 40 minutes; watch the VM's console if you
 like), then ejects the install media and deletes the answer CD. If you stop it while it
 waits, the install carries on; `bash proxmox-setup.sh finish-mgmt00` picks the wait up
@@ -101,7 +118,8 @@ after the domain join), then delete the file as the script says (`shred -u ...`)
 ## 4. First sign-in on {{mgmt00.name}}
 
 1. Sign in as `{{mgmt00.local_user}}` on the VM's console, or with Remote Desktop to
-   `{{mgmt00.ip}}` from the lab subnet. Check, in PowerShell:
+   `{{mgmt00.ip}}` from the lab subnet (or to `{{mgmt00.name_lower}}` over your tailnet, if
+   step 3 joined it). Check, in PowerShell:
    ```powershell
    hostname                               # {{mgmt00.name}}
    Test-NetConnection {{network.gateway}}     # TcpTestSucceeded or PingSucceeded: True
@@ -112,56 +130,70 @@ after the domain join), then delete the file as the script says (`shred -u ...`)
 
 ## 5. Toolchain and repo
 
-1. Copy this repo onto {{mgmt00.name}} (including your `inventory/site.yaml`). In an
-   **elevated Windows PowerShell**, from that copy:
+1. **Get the repo onto {{mgmt00.name}}**, with your filled-in `inventory/site.yaml` in it, in a
+   folder of your choice; this guide uses `C:\Users\{{mgmt00.local_user}}\Downloads\midcoast-labs`.
+   Any way works: Taildrop, a share, a USB drive, or download the zip from GitHub and
+   extract it. (You don't need a git remote of your own; step 5.3 makes the copy a git
+   repository.)
+2. **Install the toolchain.** Open an **elevated Windows PowerShell** (Start, type
+   `powershell`, "Run as administrator"), go to that folder, and run:
    ```powershell
-   Set-ExecutionPolicy -Scope LocalMachine RemoteSigned
+   cd C:\Users\{{mgmt00.local_user}}\Downloads\midcoast-labs
+   Set-ExecutionPolicy -Scope LocalMachine RemoteSigned -Force
    Get-ChildItem -Recurse | Unblock-File
    .\setup\mgmt\Install-MgmtTools.ps1
    ```
    `Unblock-File` is needed when the copy came from a zip or a download: Windows marks
    those files as from the internet, and `RemoteSigned` refuses to run them ("is not
    digitally signed"). Only unblock a copy you trust.
-   This installs PowerShell 7, Git, Terraform, Packer, VS Code, KeePassXC, the ADK
+   The installer puts in PowerShell 7, Git, Terraform, Packer, VS Code, KeePassXC, the ADK
    Deployment Tools (for `oscdimg.exe`), RSAT and the PowerShell modules, straight from
    each vendor (the same installer every pipeline-built MGMT runs). It also creates
-   `C:\MidCoastLab` and grants your account access, so the next steps don't need
-   elevation.
-2. Put the repo at `{{repo.path}}`, with your filled-in `inventory/site.yaml`: either
-   `git clone <your repo URL> {{repo.path}}`, or move the copy there. It must be a **git
-   repository**: the pipeline commits the ledger and hands the history to every new MGMT.
-   A copied folder usually isn't one (the `.git` folder stays behind), so in a new
-   **PowerShell 7** window (Git is on the PATH now):
+   `{{lab.root}}` and grants your account access, so the next steps don't need elevation.
+   About 20 minutes; RSAT comes from Windows Update.
+3. **Put the repo in place.** Close that window and open a **new PowerShell 7** window
+   (Start, type `pwsh`; not elevated), then:
    ```powershell
-   cd {{repo.path}}
-   git config --global user.name  "<Your Name>"
-   git config --global user.email "<you@example.com>"
-   if (-not (Test-Path .git)) { git init; git add -A; git commit -m "MidCoast Lab: {{site.name}}" }
-   git status --short          # nothing listed; no .kdbx or .tfstate is ever committed (.gitignore)
+   cd C:\Users\{{mgmt00.local_user}}\Downloads\midcoast-labs
+   ./setup/mgmt/Initialize-LabRepo.ps1
    ```
-   `Test-LabSite.ps1` (step 7) stops if the repo isn't a git repository. Terraform state
-   will live in `{{state.path}}`.
+   It copies the folder to `{{repo.path}}`, makes it a **git repository** if it isn't one
+   (a copied or extracted folder has no `.git`; the pipeline commits the ledger and hands
+   the history to every new MGMT), sets your git name and e-mail from `site.yaml`, commits
+   everything, and runs `Test-LabInventory.ps1` from there. Terraform state will live in
+   `{{state.path}}`. From here on, work in `{{repo.path}}`.
 
 ## 6. Vault
 
-1. In KeePassXC, create `{{vault.path}}` with a strong master password.
-2. In **PowerShell 7**:
+1. In **PowerShell 7**:
    ```powershell
    cd {{repo.path}}
    ./setup/mgmt/Initialize-LabVault.ps1 -DatabasePath {{vault.path}}
    ```
-   It asks for the two Proxmox token secrets (and, when `site.yaml` has
-   `tailscale.enabled: true`, your Tailscale auth key) and generates every other
-   password the inventory names. Make the Tailscale key in the admin console (Settings,
-   Keys) **reusable**, **tagged** (e.g. `tag:midcoast-lab`) and **not ephemeral** (leave *Ephemeral* off). An ephemeral device is removed from the tailnet once it's offline for a while and can't rejoin by itself; lab machines restart, and the key is deleted from each machine after setup. **Back up the `.kdbx` and its master password.**
-3. **Tailscale** (only with `tailscale.enabled: true`). In an **elevated PowerShell 7**:
+   It creates `{{vault.path}}` (asks you for a new master password, twice), registers it as
+   vault `{{vault.name}}` for your account, asks for the two Proxmox token secrets (and,
+   when `tailscale.enabled` is `true`, your Tailscale auth key), and generates every other
+   password the inventory names. **Back up the `.kdbx` and its master password outside
+   the lab**: without them the lab's secrets are gone.
+
+   The Tailscale key for the vault is the one every lab machine uses: make it in the admin
+   console (Settings, Keys) **reusable**, **tagged** (e.g. `tag:midcoast-lab`) and **not
+   ephemeral** (leave *Ephemeral* off). An ephemeral device is removed from the tailnet
+   once it's offline for a while and can't rejoin by itself; lab machines restart, and the
+   key is deleted from each machine after setup. It's a different key from step 3's
+   one-time key.
+2. **Tailscale** (only with `tailscale.enabled: true`). In an **elevated PowerShell 7**:
    ```powershell
+   cd {{repo.path}}
    ./setup/mgmt/Join-LabTailnet.ps1
    ```
-   {{mgmt00.name}} joins your tailnet and allows Remote Desktop over it. Every
-   pipeline-built machine does the same by itself during its setup.
+   {{mgmt00.name}} joins your tailnet (or, if step 3 already joined it, switches to the
+   vault's reusable key) with the same settings as every pipeline-built machine: Remote
+   Desktop over the tailnet, the Tailscale policy and the watchdog that logs it back in
+   after restarts.
 
-At the start of each session: `Unlock-SecretVault -Name {{vault.name}}`.
+Pipeline scripts ask for the vault's master password when it's locked (a new window, or
+after a while). To unlock it ahead of time: `Unlock-SecretVault -Name {{vault.name}}`.
 
 ## 7. Pre-flight, both templates, Phase 1
 
@@ -170,8 +202,8 @@ In PowerShell 7, from `{{repo.path}}`:
 ```powershell
 ./orchestration/Test-LabInventory.ps1        # lab.yaml + site.yaml
 ./orchestration/Test-LabSite.ps1             # live: Proxmox, VMIDs, lab addresses
-./orchestration/Build-LabTemplate.ps1        # WIN2022-TEMPLATE, about an hour
-./orchestration/Build-LabTemplate.ps1 -Template windows_11   # WIN11-TEMPLATE, about an hour
+./orchestration/Build-LabTemplate.ps1 -Template windows_server_2022   # WIN2022-TEMPLATE, about an hour
+./orchestration/Build-LabTemplate.ps1 -Template windows_11            # WIN11-TEMPLATE, about an hour
 git add inventory/instances.yaml; git commit -m "Templates"
 ./orchestration/Invoke-LabPhase.ps1 -Phase 1 -PlanOnly
 ./orchestration/Invoke-LabPhase.ps1 -Phase 1 # two DCs, about an hour
@@ -179,63 +211,54 @@ git add inventory/instances.yaml; git commit -m "Phase 1"
 ```
 
 Both templates now: neither needs the domain, and step 9 needs the Windows 11 one. Build
-them one after the other (they share the build slot), not at the same time.
+them one after the other (they share the build slot), not at the same time. `-Template`
+takes any key under `templates:` in `lab.yaml`, so a template added later (Server Core,
+another edition) is built the same way.
 
 ## 8. Join {{mgmt00.name}} to the domain
 
-The join uses `svc-domainjoin`, the account Phase 1 created for joining computers. Its
-password, like every lab password, was generated into the vault in step 6.
+One script does the join and everything a pipeline-built MGMT gets after it. In an
+**elevated PowerShell 7**:
 
-> **Before you start: have a way back in.** The vault lives *on* {{mgmt00.name}}, and Remote
-> Desktop asks for the password before you get a desktop. So before joining, make sure you
-> can reach these from somewhere else:
+```powershell
+cd {{repo.path}}
+./setup/mgmt/Join-LabDomain.ps1
+```
+
+It points DNS at the DCs Phase 1 built, joins `{{ad.domain}}` into `{{mgmt.ou_dn}}` as
+`svc-domainjoin` (the account Phase 1 created for joining computers; its password comes
+from the vault), schedules the post-join rules for the next start-up (the Tier 0 group
+`{{tier0.group}}` may use Remote Desktop, git may use the repo under any account, and only
+SYSTEM, Administrators and `{{tier0.group}}` may use `{{lab.root}}`), and restarts.
+
+> **Before you say yes to its prompt: have a way back in.** The vault lives *on*
+> {{mgmt00.name}}, and Remote Desktop asks for the password before you get a desktop. So
+> make sure you can reach these from somewhere else:
 > - the password of the local account **`{{mgmt00.local_user}}`** (printed by
 >   `proxmox-setup.sh` in step 3; it keeps working after the join: LAPS manages only the
 >   built-in Administrator), and
 > - the password of **`{{ad.netbios}}\{{admin.account}}`**, your Tier 0 admin account: copy it
->   from the vault now (`Get-Secret -Vault {{vault.name}} -Name {{admin.account}} -AsPlainText`)
->   into your own password manager, or keep a copy of the `.kdbx` where you can open it.
+>   from the vault now into your own password manager, or keep a copy of the `.kdbx` where
+>   you can open it:
+>   ```powershell
+>   Get-Secret -Vault {{vault.name}} -Name {{admin.account}} -AsPlainText
+>   ```
 >
 > If you're locked out anyway, the VM's console in the Proxmox UI still works.
 
-1. **Point DNS at the DCs.** In an **elevated Windows PowerShell** (Phase 1 builds its
-   two DCs in slots A and B):
-   ```powershell
-   $nic = Get-NetAdapter -Physical | Where-Object Status -eq 'Up' | Select-Object -First 1
-   Set-DnsClientServerAddress -InterfaceIndex $nic.ifIndex -ServerAddresses {{dc.a.ip}}, {{dc.b.ip}}
-   Resolve-DnsName {{ad.domain}}      # should return the DC addresses
-   ```
-2. **Copy the join password.** In **PowerShell 7** (the vault lives there):
-   ```powershell
-   Unlock-SecretVault -Name {{vault.name}}
-   Get-Secret -Vault {{vault.name}} -Name svc-domainjoin -AsPlainText | Set-Clipboard
-   ```
-3. **Join.** Back in the **elevated Windows PowerShell** (`Add-Computer` isn't in
-   PowerShell 7). At the credential prompt, the user name is filled in; paste the
-   password with Ctrl+V:
-   ```powershell
-   Add-Computer -DomainName {{ad.domain}} -OUPath '{{mgmt.ou_dn}}' `
-     -Credential {{ad.netbios}}\svc-domainjoin -Restart
-   ```
-   Then clear the clipboard: `Set-Clipboard -Value ' '`.
-4. **After the restart**, still signed in locally, grant the Tier 0 admin group access to
-   the lab folder (the same grant every pipeline-built MGMT gets), in an elevated prompt:
-   ```powershell
-   icacls {{lab.root}} /grant '{{ad.netbios}}\{{tier0.group}}:(OI)(CI)F' /T /C /Q
-   git config --system --add safe.directory {{repo.path_fwd}}
-   Add-LocalGroupMember -Group (Get-LocalGroup -SID 'S-1-5-32-555') -Member '{{ad.netbios}}\{{tier0.group}}'
-   ```
-   The last line lets the Tier 0 admin group use Remote Desktop (every pipeline-built MGMT
-   gets the same grant). Only that group: standard accounts don't sign in to
-   {{mgmt00.name}}, which is a Tier 0 admin workstation.
-5. **Switch to your admin account.** Copy its password the same way:
-   `Get-Secret -Vault {{vault.name}} -Name {{admin.account}} -AsPlainText | Set-Clipboard`.
-   Sign out, and sign in as `{{ad.netbios}}\{{admin.account}}`. From now on, work as that
-   account. LAPS takes over {{mgmt00.name}}'s local Administrator.
+**After the restart**, sign in as `{{ad.netbios}}\{{admin.account}}` and work as that account
+from now on (standard accounts don't sign in to {{mgmt00.name}}, a Tier 0 admin
+workstation; LAPS takes over its local Administrator). The post-join rules ran at
+start-up: `C:\ProgramData\MidCoastLab\Logs\Bootstrap\mgmt00-postjoin.log` says so. Your new
+profile hasn't registered the vault yet, so in **PowerShell 7**:
 
-   Your new profile hasn't registered the vault yet. In PowerShell 7, from `{{repo.path}}`:
-   `./setup/mgmt/Initialize-LabVault.ps1 -DatabasePath {{vault.path}}`. It registers the
-   vault for this account, and every entry should report `exists`.
+```powershell
+cd {{repo.path}}
+./setup/mgmt/Initialize-LabVault.ps1 -DatabasePath {{vault.path}}
+```
+
+It registers the vault for this account (asks for the master password), reports every
+entry as `exists`, and sets this account's git identity.
 
 ## 9. Replace {{mgmt00.name}} with a pipeline-built MGMT
 
@@ -250,14 +273,12 @@ Terraform state and the vault, and then retires {{mgmt00.name}}. About an hour.
    ./orchestration/Invoke-LabMgmtRotation.ps1 -Stage Prepare
    ```
    Check its validation report: `MGMT-007` (Remote Desktop) must pass, and `TS-001`
-   too if `tailscale.enabled` is on.
+   too if `tailscale.enabled` is on. It ends by printing the next steps, the same as below.
 2. **Remote Desktop to `{{mgmt.b.ip}}`** as `{{ad.netbios}}\{{admin.account}}`, from
    {{mgmt00.name}} (or over your tailnet). Open **PowerShell 7**:
    ```powershell
    cd {{repo.path}}
-   git config --global user.name  "<Your Name>"
-   git config --global user.email "<you@example.com>"
-   ./setup/mgmt/Initialize-LabVault.ps1 -DatabasePath {{vault.path}}   # registers the vault for this machine
+   ./setup/mgmt/Initialize-LabVault.ps1 -DatabasePath {{vault.path}}   # registers the vault for this machine; sets git identity
    ./orchestration/Invoke-LabMgmtRotation.ps1 -Stage Complete -KeepOld
    ```
    `-KeepOld` only shuts {{mgmt00.name}} down, so `Invoke-LabMgmtRotation.ps1 -Stage Abort -Force`
@@ -268,8 +289,27 @@ Terraform state and the vault, and then retires {{mgmt00.name}}. About an hour.
    git add inventory/instances.yaml; git commit -m "MGMT rotation: {{mgmt00.name}} retired"
    ```
    It destroys VM `{{mgmt00.vmid}}` and removes its computer account and DNS records. If
-   {{mgmt00.name}} joined your tailnet, remove it in the Tailscale admin console (the pipeline
-   can't reach it to log it out). Its local account `{{mgmt00.local_user}}` goes with it.
+   {{mgmt00.name}} joined your tailnet, remove `{{mgmt00.name_lower}}` in the Tailscale admin
+   console (the pipeline can't reach it to log it out). Its local account
+   `{{mgmt00.local_user}}` goes with it.
 
 From here on, MGMT is replaced only by `Invoke-LabMgmtRotation.ps1` and DCs by
-`Invoke-LabDcRotation.ps1` (the repo's `docs/replace-mgmt.md` and `docs/replace-dc.md`).
+`Invoke-LabDcRotation.ps1` (the repo's `docs/replace-mgmt.md` and `docs/replace-dc.md`);
+every script and its switches are listed in `docs/scripts.md`.
+
+## Starting over
+
+To rebuild from nothing, first save what you want from the current MGMT (your
+`site.yaml`; the vault, if you'll need an old secret). Then copy
+`setup/proxmox/proxmox-teardown.sh` to `{{proxmox.node}}` and, as root:
+
+```bash
+bash proxmox-teardown.sh --vmid-base {{proxmox.vmid_base}} --dry-run   # what it would remove
+bash proxmox-teardown.sh --vmid-base {{proxmox.vmid_base}}             # asks you to type DESTROY
+```
+
+It removes only the lab's own VMs in VMIDs `{{proxmox.vmid_base}}`–`{{proxmox.vmid_last}}`
+(anything else there is listed and left alone), with the lab's Proxmox pool, user and
+role. It keeps your ISOs, and backups unless you add `--include-backups`. Remove the lab's
+machines in the Tailscale admin console too, then begin again at step 3 (the router and
+the ISOs are still there).

@@ -31,43 +31,12 @@ function Step([string] $Next, [bool] $Reboot = $false) {
     [pscustomobject]@{ Next = $Next; Reboot = $Reboot }
 }
 
-function Join-LabTailnetIfEnabled {
-    # site.yaml tailscale.enabled: join the tailnet. A failure is logged as a
-    # warning (TS-001 reports it); the lab works without the tailnet.
-    param([switch] $Dc)
-    if (-not $Inventory.tailscale.enabled) { return }
-    try {
-        $key = [System.Net.NetworkCredential]::new('', (Get-LabSecret -Name $Inventory.secrets.entries.tailscale_authkey)).Password
-        if ($Dc) {
-            # Before the adapter gets an address: AD and DNS stay on the lab address.
-            Set-LabDcSingleHomed -Address $Metadata.ipv4 -Domain $Inventory.identity.active_directory.domain
-            Write-LabLog "DNS records and Netlogon limited to $($Metadata.ipv4)"
-        }
-        Write-LabLog "Tailscale: $(Install-LabTailscale -AuthKey $key -Hostname $Metadata.hostname)"
-        if ($Dc) {
-            Start-Sleep -Seconds 30
-            $n = Remove-LabTailnetDnsRecords -Domain $Inventory.identity.active_directory.domain
-            if ($n -gt 0) { Write-LabLog "Removed $n DNS record(s) pointing at a Tailscale address" -Level Warn }
-        }
-    } catch {
-        Write-LabLog "Tailscale skipped: $($_.Exception.Message)" -Level Warn
-    }
-}
-
 switch ($Stage) {
 
     'Start' {
         # Remote Desktop for admins, from the lab subnet only, Network Level
         # Authentication on. (Who may sign in is AD's default for DCs: Administrators.)
-        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name fDenyTSConnections -Value 0
-        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name UserAuthentication -Value 1
-        Set-Service -Name TermService -StartupType Automatic
-        Start-Service -Name TermService
-        $rdpRules = @(Get-NetFirewallRule -Group '@FirewallAPI.dll,-28752' -Direction Inbound -ErrorAction SilentlyContinue |
-            Where-Object { $_.Name -like 'RemoteDesktop-UserMode-In-*' })
-        if ($rdpRules.Count -eq 0) { throw 'No built-in Remote Desktop firewall rules (RemoteDesktop-UserMode-In-*) found.' }
-        $rdpRules | Set-NetFirewallRule -RemoteAddress $Inventory.network.subnet -Profile Any -Enabled True
-        Write-LabLog "Remote Desktop enabled from $($Inventory.network.subnet)"
+        Write-LabLog (Enable-LabRemoteDesktop -RemoteAddress @($Inventory.network.subnet))
 
         $restart = Install-LabDirectoryFeatures
         Write-LabLog "AD DS and DNS features installed (restart needed: $restart)"
@@ -188,7 +157,7 @@ switch ($Stage) {
             $ready -and $rf.State -eq 4
         }
         & gpupdate.exe /target:computer /force | Out-Null
-        Join-LabTailnetIfEnabled -Dc
+        Join-LabTailnet -Inventory $Inventory -Metadata $Metadata -Dc
         # Let AD settle before validation. Right after promotion (and after the
         # DNS/Netlogon restarts of the Tailscale step), replication and Group
         # Policy queries can fail with credential errors for a few minutes; the

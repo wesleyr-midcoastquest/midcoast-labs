@@ -31,6 +31,10 @@
       computer object. Anything done ON the new MGMT after the handover (Terraform
       changes, ledger edits) is lost, so Abort after handover needs -Force.
 
+.PARAMETER Stage
+    Prepare (on the current MGMT), Complete (on the new MGMT) or Abort (on the
+    old MGMT); see above.
+
 .EXAMPLE
     ./orchestration/Invoke-LabMgmtRotation.ps1 -Stage Prepare     # on the current MGMT
 .EXAMPLE
@@ -112,7 +116,7 @@ try {
         $tplCur = Get-LabCurrentTemplate -Family $family
         $tplVm  = if ($tplCur) { Test-LabPveVm -Inventory $inv -Token $token -VmId ([int] $tplCur.vmid) }
         if (-not $tplVm -or -not $tplVm.template) {
-            throw "No current $family template$(if ($tplCur) { " ($($tplCur.name) at VMID $($tplCur.vmid) is missing from Proxmox)" }). Build it first: ./orchestration/Build-LabTemplate.ps1 -Template windows_11"
+            throw "No current $family template$(if ($tplCur) { " ($($tplCur.name) at VMID $($tplCur.vmid) is missing from Proxmox)" }). Build it first: ./orchestration/Build-LabTemplate.ps1 -Template $(Get-LabTemplateKey -Inventory $inv -Family $family)"
         }
 
         Push-Location (Get-LabRepoRoot)
@@ -182,16 +186,22 @@ try {
         Set-LabHandoverLock -Inventory $inv -NewInstance $new -Status 'complete'
 
         Write-Host "`nHandover complete. $env:COMPUTERNAME is now locked." -ForegroundColor Green
+        # Same steps, same wording as docs/replace-mgmt.md and runbook step 9.
+        $h = (Get-LabMgmtDefinition -Inventory $inv).handover
         Write-Host @"
 
 Next, on $($new.name):
   1. Remote Desktop to $($new.ipv4) as $($ad.netbios)\<you>$($inv.identity.administrative_model.account_suffix).
-  2. Open PowerShell 7 and register the vault for your account (asks for the master password only):
-       cd $((Get-LabMgmtDefinition -Inventory $inv).handover.repo_path)
-       ./setup/mgmt/Initialize-LabVault.ps1 -DatabasePath $((Get-LabMgmtDefinition -Inventory $inv).handover.vault_path)
-  3. ./orchestration/Invoke-LabMgmtRotation.ps1 -Stage Complete
+  2. In PowerShell 7, register the vault for your account (asks for the master password; also sets your git identity):
+       cd $($h.repo_path)
+       ./setup/mgmt/Initialize-LabVault.ps1 -DatabasePath $($h.vault_path)
+  3. Retire $env:COMPUTERNAME, in two steps so you can still roll back:
+       ./orchestration/Invoke-LabMgmtRotation.ps1 -Stage Complete -KeepOld   # shuts it down, keeps the VM
+       (check the new MGMT; then, to destroy it)
+       ./orchestration/Invoke-LabMgmtRotation.ps1 -Stage Complete
+     Or in one go: ./orchestration/Invoke-LabMgmtRotation.ps1 -Stage Complete
 
-To roll back instead, here: ./orchestration/Invoke-LabMgmtRotation.ps1 -Stage Abort -Force
+To roll back instead, here on ${env:COMPUTERNAME}: ./orchestration/Invoke-LabMgmtRotation.ps1 -Stage Abort -Force
 "@
     }
 
@@ -203,6 +213,8 @@ To roll back instead, here: ./orchestration/Invoke-LabMgmtRotation.ps1 -Stage Ab
         if (-not $m.Self -or $m.Self.state -ne 'active') {
             throw "Run Complete on the new, active MGMT ($(($m.Active | ForEach-Object name) -join ', ')); this is $env:COMPUTERNAME."
         }
+        # A new profile on a new machine: the ledger commits need a name and e-mail.
+        Write-Host "   $(Set-LabGitIdentity -Inventory $inv)"
         $old = $m.Retiring | Select-Object -First 1
         if (-not $old) { Write-Host 'No retiring MGMT; nothing to complete.' -ForegroundColor Yellow; return }
         if (-not (Test-LabHandoverComplete -Inventory $inv)) {
@@ -274,7 +286,10 @@ To roll back instead, here: ./orchestration/Invoke-LabMgmtRotation.ps1 -Stage Ab
         # The old MGMT may have been the last clone of a superseded template.
         try { Remove-LabUnusedTemplates -Inventory $inv -Token $token } catch { Write-Warning "Template cleanup skipped: $($_.Exception.Message)" }
         Write-Host "`nMGMT rotation complete: $($old.name) -> $env:COMPUTERNAME." -ForegroundColor Green
-        Write-Host "Commit inventory/instances.yaml:  git add inventory/instances.yaml; git commit -m `"MGMT rotation: $($old.name) -> $env:COMPUTERNAME`""
+        if ($inv.tailscale.enabled -and $old.origin -eq 'manual') {
+            Write-Host "$($old.name) was hand-built; if it joined your tailnet, remove it in the Tailscale admin console." -ForegroundColor Yellow
+        }
+        Write-LabCommitHint -Message "MGMT rotation: $($old.name) -> $env:COMPUTERNAME"
     }
 
     # ════════════════════════════════════════════════════════════════════════
@@ -337,6 +352,7 @@ To roll back instead, here: ./orchestration/Invoke-LabMgmtRotation.ps1 -Stage Ab
         # 4. Only now unlock.
         Remove-LabHandoverLock -Inventory $inv
         Write-Host "`nRolled back. $env:COMPUTERNAME is the active MGMT again." -ForegroundColor Green
+        Write-LabCommitHint -Message "MGMT rotation: abort"
     }
     }
 } finally {

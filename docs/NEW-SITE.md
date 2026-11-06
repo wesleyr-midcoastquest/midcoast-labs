@@ -28,7 +28,7 @@ The last column is where each goes in `site.yaml`.
 |---|---|---|
 | A short name for this lab | Your choice, e.g. `jdoe-lab`. Shown in logs and the site kit | `site.name` |
 | Time zone | A **Windows** time zone ID, such as `Eastern Standard Time` (not `America/New_York`): `tzutil /l` on any Windows machine lists them. `UTC` suits a team in several time zones | `site.time_zone` |
-| Your administrator account(s) | A username (18 characters or fewer), given name and surname for each. At least one at tier 0. Each gets `<username>` (standard) and `<username>-a` (admin) | `identity.administrators` |
+| Your administrator account(s) | A username (18 characters or fewer), given name and surname for each. At least one at tier 0. Each gets `<username>` (standard) and `<username>-a` (admin). The name and `<username>@<tenant domain>` also become your git identity on MGMT, so use your real name | `identity.administrators` |
 
 ### Domain and tenant
 
@@ -80,7 +80,9 @@ names.
 Only the yes/no goes in `site.yaml`. The **auth key** goes in the vault later (the runbook
 asks for it), never in this file. Make it **reusable**, **tagged** (e.g.
 `tag:midcoast-lab`) and **not ephemeral** (leave *Ephemeral* off): an ephemeral device is
-removed from the tailnet once it's offline for a while and can't rejoin by itself.
+removed from the tailnet once it's offline for a while and can't rejoin by itself. With
+`enabled: true`, runbook step 3 also offers to put MGMT-00 on the tailnet during its
+install, with a separate **one-time** key (reusable off) you type at the prompt.
 
 ## 2. Fill in `site.yaml`
 

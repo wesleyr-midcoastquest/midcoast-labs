@@ -176,6 +176,18 @@ function New-LabHostname {
     $name
 }
 
+function Get-LabTemplateKey {
+    # The templates.<key> in lab.yaml whose template_name is $Family
+    # (WIN2022-TEMPLATE -> windows_server_2022), or $null. Build-LabTemplate's
+    # -Template takes the key, so messages that tell someone what to build use this.
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] $Inventory,
+        [Parameter(Mandatory)] [string] $Family
+    )
+    @($Inventory.templates.PSObject.Properties | Where-Object { $_.Value.template_name -eq $Family } | ForEach-Object Name)[0]
+}
+
 function Get-LabRoleDefinition {
     [CmdletBinding()]
     param(
@@ -299,7 +311,7 @@ function Get-LabActiveDCs {
 }
 
 Export-ModuleMember -Function Get-LabInventory, ConvertTo-LabYymmdd, New-LabHostname,
-    Get-LabRoleDefinition, Get-LabDomainDN, ConvertTo-LabOUDistinguishedName,
+    Get-LabRoleDefinition, Get-LabTemplateKey, Get-LabDomainDN, ConvertTo-LabOUDistinguishedName,
     Get-LabPrefixLength, Get-LabRoleAddresses, Get-LabInstances, Get-LabTemplateVersions, Get-LabActiveDCs,
     Get-LabTierOU, Get-LabOUTier, Get-LabComputerOUs, Get-LabGroupNames,
     ConvertTo-LabHostAddress, Resolve-LabInventory, Import-LabInventory

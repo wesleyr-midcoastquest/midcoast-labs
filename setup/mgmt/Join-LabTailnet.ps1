@@ -2,14 +2,22 @@
 #Requires -RunAsAdministrator
 <#
 .SYNOPSIS
-    Joins the hand-built MGMT-00 to the site's tailnet (site.yaml tailscale.enabled).
+    Puts the hand-built MGMT-00 on the site's tailnet the way every lab machine
+    is (site.yaml tailscale.enabled), with the reusable key from the vault
+    (runbook step 6).
 
 .DESCRIPTION
     Pipeline-built machines join during their bootstrap; MGMT-00 is built before
-    the vault exists, so it joins here, once, after Initialize-LabVault. Same
-    settings as every other lab machine (Lab.System Install-LabTailscale):
+    the vault exists, so it gets this step here, once, after Initialize-LabVault.
+    Same settings as every other lab machine (Lab.System Install-LabTailscale):
     --unattended --accept-routes=false --accept-dns=false, the Tailscale adapter
-    kept out of DNS, Remote Desktop allowed on that adapter only.
+    kept out of DNS, Remote Desktop allowed on that adapter only, the AuthKey
+    system policy and the MidCoastLab-Tailscale watchdog task, so a restart or
+    an update can't log it out.
+
+    If proxmox-setup.sh already joined MGMT-00 with a one-time key (runbook
+    step 3), this re-authenticates it with the vault's reusable key and adds the
+    policy and watchdog; the device keeps its name on the tailnet.
 
     The key in the vault must be reusable, tagged and NOT ephemeral: an ephemeral
     device drops off the tailnet when it's offline and can't rejoin.
@@ -22,16 +30,12 @@ param()
 
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
-foreach ($m in 'Lab.Inventory', 'Lab.System') {
-    Import-Module (Join-Path $repo "platform/modules/$m/$m.psm1") -Force -DisableNameChecking
-}
-Import-Module Microsoft.PowerShell.SecretManagement, SecretManagement.KeePass, powershell-yaml
-$inv = Import-LabInventory -ProductPath (Join-Path $repo 'inventory/lab.yaml') -SitePath (Join-Path $repo 'inventory/site.yaml')
+Import-Module (Join-Path $repo 'orchestration/Lab.Orchestration.psm1') -Force -DisableNameChecking
+Import-Module (Join-Path $repo 'platform/modules/Lab.System/Lab.System.psm1') -Force -DisableNameChecking
+Import-Module Microsoft.PowerShell.SecretManagement, SecretManagement.KeePass
+$inv = Get-LabResolvedInventory -NoExport
 if (-not $inv.tailscale.enabled) { Write-Host 'site.yaml has tailscale.enabled false (or unset); nothing to do.'; return }
 
-$vault = $inv.secrets.vault
-$name  = $inv.secrets.entries.tailscale_authkey
-Unlock-SecretVault -Name $vault -Password (Read-Host "KeePass master password for $vault" -AsSecureString)
-$key = Get-Secret -Vault $vault -Name $name -AsPlainText -ErrorAction SilentlyContinue
-if (-not $key) { throw "The vault has no $name. Run ./setup/mgmt/Initialize-LabVault.ps1 (it asks for the key when tailscale.enabled is true)." }
-Install-LabTailscale -AuthKey $key -Hostname $env:COMPUTERNAME
+# Get-LabSecretText asks for the vault's master password if it's locked.
+$key = Get-LabSecretText -Inventory $inv -Name $inv.secrets.entries.tailscale_authkey
+Write-Host (Install-LabTailscale -AuthKey $key -Hostname $env:COMPUTERNAME)

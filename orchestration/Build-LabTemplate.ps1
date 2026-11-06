@@ -10,7 +10,7 @@
     1. Validates inventory and the site; deletes superseded versions that no VM
        uses any more.
     2. Removes any leftover staging VM, then runs Packer at the template's
-       staging VMID (vmid_base + 149 for Server 2022, + 148 for Windows 11).
+       staging VMID (templates.<key>.build.staging_vmid_offset in lab.yaml).
     3. On success: full-clones staging into the next free VMID of the template's
        range as <family>-<YYMMDD>-<NN>, converts it to a template, records it in
        the ledger as current (the previous version becomes superseded), and
@@ -18,16 +18,22 @@
     New VMs clone the current version; existing VMs keep theirs until they are
     replaced. A failed build changes nothing.
 
-    Run monthly, or after critical security updates.
+    Run monthly, or after critical security updates. Build one template at a
+    time: every template family shares the Packer build slot on MGMT.
+
+.PARAMETER Template
+    The template to build: a key under templates: in lab.yaml
+    (windows_server_2022, windows_11, or any template added later).
+    Default: windows_server_2022.
 
 .EXAMPLE
-    ./orchestration/Build-LabTemplate.ps1                        # WIN2022-TEMPLATE
+    ./orchestration/Build-LabTemplate.ps1 -Template windows_server_2022   # WIN2022-TEMPLATE
 .EXAMPLE
-    ./orchestration/Build-LabTemplate.ps1 -Template windows_11   # WIN11-TEMPLATE
+    ./orchestration/Build-LabTemplate.ps1 -Template windows_11            # WIN11-TEMPLATE
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('windows_server_2022', 'windows_11')] [string] $Template = 'windows_server_2022'
+    [ValidateNotNullOrEmpty()] [string] $Template = 'windows_server_2022'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -41,23 +47,23 @@ Start-Transcript -Path $runLog | Out-Null
 trap { try { Stop-Transcript | Out-Null } catch { }; break }
 $repo = Get-LabRepoRoot
 
+# ── Pre-flight: inventory, then the live site ─────────────────────────────
 $findings = & (Join-Path $PSScriptRoot 'Test-LabInventory.ps1') -PassThru
 if (@($findings | Where-Object Level -eq 'Error').Count -gt 0) { throw 'Inventory validation failed.' }
-
-# Live site pre-flight: Proxmox (node, storage, bridge, ISOs, pool, VMIDs) and lab addresses.
-
 $site = & (Join-Path $PSScriptRoot 'Test-LabSite.ps1') -PassThru
-
 if (@($site | Where-Object Level -eq 'Error').Count -gt 0) { throw 'Site pre-flight failed; see above.' }
 
-$inv   = Get-LabResolvedInventory
+$inv = Get-LabResolvedInventory
 Assert-LabNotHandedOver -Inventory $inv
-$tpl   = $inv.templates.$Template
+# -Template is checked against the inventory, not a fixed list, so a template
+# added to lab.yaml (another Windows edition, Server Core) needs no script change.
+$known = @($inv.templates.PSObject.Properties | ForEach-Object Name)
+if ($known -notcontains $Template) { throw "Unknown template '$Template'. lab.yaml defines: $($known -join ', ')." }
+$tpl = $inv.templates.$Template
 if (-not $tpl.build) { throw "templates.$Template has no build section in lab.yaml." }
 $node  = $inv.proxmox.node
-$sa    = $inv.proxmox.service_account
 $stage = [int] $tpl.build.staging_vmid
-$token = "$($sa.user)!$($sa.packer_token_name)=" + (Get-LabSecretText -Inventory $inv -Name $inv.secrets.entries.proxmox_packer_token)
+$token = Get-LabPveToken -Inventory $inv -Purpose packer
 
 # Free the range first: delete versions no VM uses any more.
 Remove-LabUnusedTemplates -Inventory $inv -Token $token
@@ -70,7 +76,7 @@ Write-Host "Building $($version.name) (VMID $final)$(if ($previous) { "; current
 # Packer's cd_content needs an ISO tool; on Windows that's oscdimg (ADK Deployment Tools).
 if (-not (Get-Command oscdimg.exe -ErrorAction SilentlyContinue)) {
     $adk = Get-ChildItem 'C:\Program Files (x86)\Windows Kits\10\Assessment and Deployment Kit\Deployment Tools\amd64\Oscdimg\oscdimg.exe' -ErrorAction SilentlyContinue
-    if (-not $adk) { throw 'oscdimg.exe not found. Install the Windows ADK Deployment Tools (see docs/mgmt-00.md).' }
+    if (-not $adk) { throw 'oscdimg.exe not found. Install the Windows ADK Deployment Tools (setup/mgmt/Install-MgmtTools.ps1 does; runbook step 5).' }
     $env:PATH = "$($adk.DirectoryName);$env:PATH"
 }
 
@@ -91,11 +97,13 @@ if ($left) {
 }
 
 # ── Packer ────────────────────────────────────────────────────────────────
-$env:PKR_VAR_proxmox_token_secret = Get-LabSecretText -Inventory $inv -Name $inv.secrets.entries.proxmox_packer_token
+# Secrets reach Packer as PKR_VAR_* environment variables for this process
+# only, and are removed again whatever happens.
+$env:PKR_VAR_proxmox_token_secret = ($token -split '=', 2)[1]
 $env:PKR_VAR_local_admin_password = Get-LabSecretText -Inventory $inv -Name $inv.secrets.entries.local_administrator
+$env:PKR_VAR_template_key         = $Template
+$env:PKR_VAR_inventory_path       = Get-LabResolvedPath   # resolved lab.yaml + site.yaml
 $packerDir = Join-Path $repo 'packer/windows'
-$env:PKR_VAR_template_key = $Template
-$env:PKR_VAR_inventory_path = Get-LabResolvedPath   # resolved lab.yaml + site.yaml
 $log = Join-Path $inv.logging.path ("Orchestration/packer-{0}.log" -f (Get-Date -Format 'yyyyMMdd-HHmmss'))
 New-Item -ItemType Directory -Path (Split-Path $log) -Force | Out-Null
 try {
@@ -106,14 +114,16 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'packer validate failed.' }
     $env:PACKER_LOG = '1'; $env:PACKER_LOG_PATH = $log
     & packer build -on-error=cleanup .
-    $buildExit = $LASTEXITCODE
-    if ($buildExit -ne 0) { throw "packer build failed; nothing changed$(if ($previous) { " ($($previous.name) is still current)" }). Log: $log" }
+    if ($LASTEXITCODE -ne 0) { throw "packer build failed; nothing changed$(if ($previous) { " ($($previous.name) is still current)" }). Log: $log" }
 } finally {
     Pop-Location
     Remove-Item Env:\PKR_VAR_proxmox_token_secret, Env:\PKR_VAR_local_admin_password, Env:\PKR_VAR_template_key, Env:\PKR_VAR_inventory_path, Env:\PACKER_LOG, Env:\PACKER_LOG_PATH -ErrorAction SilentlyContinue
 }
 
 # ── Staging -> new template version ───────────────────────────────────────
+# Clone, convert, tag, then record in the ledger. If anything fails before the
+# ledger is written, the half-made version is removed again so the range never
+# holds a template the ledger doesn't know.
 $recorded = $false
 try {
     Write-Host "Cloning staging $stage -> $final ($($version.name))"
@@ -145,7 +155,6 @@ try {
     $recorded = $true
 } finally {
     if (-not $recorded) {
-        # Don't leak a half-made version into the range: remove it if it's ours.
         $half = Test-LabPveVm -Inventory $inv -Token $token -VmId $final
         if ($half -and $half.name -eq $version.name) {
             Write-Warning "Build failed after cloning; removing the unrecorded $($version.name) (VMID $final)."
@@ -162,5 +171,5 @@ Wait-LabPveTask -Inventory $inv -Token $token -Upid (Invoke-LabPveApi -Inventory
 Remove-LabUnusedTemplates -Inventory $inv -Token $token
 
 Write-Host "$($version.name) is ready at VMID $final and is now the current $($tpl.template_name)." -ForegroundColor Green
-Write-Host "Commit the ledger: git add inventory/instances.yaml; git commit -m `"Template $($version.name)`""
+Write-LabCommitHint -Message "Template $($version.name)"
 Stop-Transcript | Out-Null
