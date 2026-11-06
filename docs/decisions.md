@@ -95,7 +95,7 @@ offsets on their own subnet and base. Inventory changes are marked `CHANGED` or
   address**. Root-side (`proxmox-setup.sh check`): the same Proxmox checks with a view of
   every VM on the cluster, before anything is created. The hand-built MGMT-00 counts as
   the lab's by VMID and name, before it is tagged or in the ledger.
-- **Site kit**: `setup/New-LabSiteKit.ps1` turns the runbook template (`docs/mgmt-00.md`,
+- **Site kit**: `setup/New-LabSiteKit.ps1` turns the runbook template (`docs/runbook.md`, `docs/mgmt-00.md` before v1.5,
   `{{token}}` placeholders) and the Proxmox setup script into a filled-in
   `out/site-kit/<site>/`. `proxmox-setup.sh` replaces `New-ProvisioningAccount.sh` and
   also creates the MGMT-00 VM, so the first build has no hand-typed site values.
@@ -456,6 +456,65 @@ an existing lab has to do something beyond `git pull` (minor: rebuild templates 
 machines to get it; major: change `site.yaml`). A date can't carry that signal, and the
 next person updating a lab needs exactly that signal.
 
+## MGMT-00 setup scripts (v1.5)
+
+The first build had four places where the runbook said "do this by hand" on MGMT-00:
+putting the repo in place and making it a git repository, creating the KeePass database,
+the domain join with its DNS change, and the post-join grants (folder ACL, git
+`safe.directory`, Remote Desktop group). Each is now a script under `setup/mgmt/`, so the
+hand-built MGMT-00 gets exactly what a pipeline-built MGMT gets, from the same
+`Lab.System` functions (`Enable-LabRemoteDesktop`, `Grant-LabRemoteDesktopGroup`,
+`Set-LabMgmtFolderAcl`, `Add-LabGitSafeDirectory`), and the runbook is paste-and-run.
+
+**Git identity comes from `site.yaml`, not a new setting.** Commits need a name and
+e-mail on every account on every MGMT (each replacement is a new profile). Rather than
+another site value (which would have made this a major version), `Set-LabGitIdentity`
+derives them from the administrator in `site.yaml` whose username matches the signed-in
+account (`-a` suffix stripped), else the first tier 0 administrator: `given_name surname`
+and `<username>@<tenant domain>`, their UPN. It never overwrites a value someone set
+themselves. `Initialize-LabVault` (run once per account per MGMT anyway) and MGMT rotation
+`Complete` call it.
+
+**The domain join uses WMI's `JoinDomainOrWorkgroup`**, because `Add-Computer` doesn't
+exist in PowerShell 7 and the rest of the setup lives there. The post-join grants need
+the domain to resolve the Tier 0 group, so they run as a one-shot SYSTEM task at the next
+start-up (`MidCoastLab-PostJoin`), the same point in time at which a pipeline-built MGMT
+gets them (its `Finalize` stage, after the join's reboot).
+
+**The vault is created by `keepassxc-cli db-create`**, which ships with KeePassXC, so step
+6 is one command and the master password is asked for twice, as the GUI would.
+
+**A locked vault asks instead of failing.** `Get-LabSecretText` calls `Unlock-LabVault`
+once when a read fails, so a new window never needs a separate `Unlock-SecretVault`;
+non-interactive sessions still get the old error with the command to run.
+
+## MGMT-00 on the tailnet from the start (v1.5)
+
+With `tailscale.enabled`, `proxmox-setup.sh` can put MGMT-00 on the tailnet during its
+unattended install, so it's reachable before the vault, and the reusable key in it, exist.
+The key for that is **one-time** (reusable off, tagged, ephemeral off), typed at the
+prompt or taken from `TAILSCALE_AUTHKEY`, never written to the site kit: it rides on the
+answer CD (root-only, shredded after the install), the guest reads it from the CD and never
+copies it to disk, and Tailscale consumes it on first use. Step 6 (`Join-LabTailnet.ps1`)
+then re-authenticates MGMT-00 with the vault's reusable key and adds the policy and
+watchdog, so from there it is like every other lab machine. Skipping the prompt changes
+nothing: step 6 joins it then.
+
+## Templates by inventory key (v1.5)
+
+`Build-LabTemplate -Template` is checked against the keys under `templates:` in
+`lab.yaml` instead of a fixed list, and every "build it first" message names the key for
+the family it needs (`Get-LabTemplateKey`). Adding a template (Server Core, another
+edition) is then an inventory change plus a Packer definition, with no script edits, and
+the runbook spells out `-Template windows_server_2022` for the same reason.
+
+## Script reference (v1.5)
+
+`docs/scripts.md` lists every script, its parameters, where it runs and when. It is
+generated from the scripts' own comment-based help by `tools/New-LabScriptReference.ps1`,
+so the help in the script is the one place to keep up to date; the generator runs before
+a release and refuses a script with no synopsis.
+
 ## Known gaps
 
 - **Windows DHCP failover isn't in scope**, since the router serves DHCP. Make sure the
@@ -467,3 +526,5 @@ next person updating a lab needs exactly that signal.
   and a replacement MGMT would fail `MGMT-005`. (Nothing has been built yet, so this only
   matters if the inventory's MGMT slots change later: rebuild the templates, then rotate.)
 - **Rotation of DCs**: built in v1.4 (see 'DC rotation').
+- **MGMT-00's one-time Tailscale join has no watchdog** until step 6 switches it to the
+  reusable key; a restart in between may log it out. MGMT-00 lives hours, so that's accepted.

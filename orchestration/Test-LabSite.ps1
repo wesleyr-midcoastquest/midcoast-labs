@@ -61,7 +61,7 @@ function Invoke-Probe {
 # The pipeline commits the ledger and hands the git history to every new MGMT.
 $repoRoot = Get-LabRepoRoot
 if (-not (Test-Path (Join-Path $repoRoot '.git'))) {
-    Add-Finding 'Error' 'Repo' "$repoRoot isn't a git repository (a copied folder, not a clone?). Run in it: git init; git add -A; git commit -m 'MidCoast Lab'  (runbook step 5)."
+    Add-Finding 'Error' 'Repo' "$repoRoot isn't a git repository (a copied folder, not a clone?). Run ./setup/mgmt/Initialize-LabRepo.ps1 from it (runbook step 5)."
 }
 
 # ── Proxmox ───────────────────────────────────────────────────────────────

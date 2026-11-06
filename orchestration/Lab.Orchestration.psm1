@@ -240,7 +240,7 @@ function New-LabInstance {
     # Pin the template version: the VM stays a (linked) clone of exactly this
     # template, even after a newer version is built.
     $current = Get-LabCurrentTemplate -Family $def.template
-    if (-not $current) { throw "No $($def.template) has been built yet. Run ./orchestration/Build-LabTemplate.ps1$(if ($def.template -like 'WIN11*') { ' -Template windows_11' }) first." }
+    if (-not $current) { throw "No $($def.template) has been built yet. Run ./orchestration/Build-LabTemplate.ps1 -Template $(Get-LabTemplateKey -Inventory $Inventory -Family $def.template) first." }
     $inst.template_vmid = [int] $current.vmid
     # And the clone mode: changing proxmox.clone_mode later affects only new VMs
     # (changing it on an existing VM would force Terraform to replace it).
@@ -266,6 +266,20 @@ function Set-LabInstanceState {
 
 # ── Secrets (KeePass via SecretManagement) ───────────────────────────────
 
+function Unlock-LabVault {
+    # Unlocks the KeePass vault for this session, asking for the master password.
+    # Every pipeline script calls Get-LabSecretText, which calls this the first
+    # time a read fails, so a new window never needs a separate Unlock-SecretVault.
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] $Inventory)
+    $vault = $Inventory.secrets.vault
+    if (-not (Get-SecretVault -Name $vault -ErrorAction SilentlyContinue)) {
+        throw "Vault $vault isn't registered for this account. Run ./setup/mgmt/Initialize-LabVault.ps1 -DatabasePath $((Get-LabMgmtDefinition -Inventory $Inventory).handover.vault_path)"
+    }
+    if (-not [Environment]::UserInteractive) { throw "Vault $vault is locked and this session can't prompt. Run  Unlock-SecretVault -Name $vault  first." }
+    Unlock-SecretVault -Name $vault -Password (Read-Host "KeePass master password for vault $vault" -AsSecureString)
+}
+
 function Get-LabSecretText {
     [CmdletBinding()]
     param(
@@ -275,12 +289,60 @@ function Get-LabSecretText {
     $vault = $Inventory.secrets.vault
     try { $value = Get-Secret -Vault $vault -Name $Name -AsPlainText -ErrorAction Stop }
     catch {
-        # The usual cause is a locked vault (a new window, or its unlock timed out).
-        throw "Couldn't read '$Name' from vault ${vault}. Usually the vault is locked: run  Unlock-SecretVault -Name $vault  and re-run. If it still fails, the entry is missing: ./setup/mgmt/Initialize-LabVault.ps1. ($($_.Exception.Message))"
+        # The usual cause is a locked vault (a new window, or its unlock timed
+        # out): ask for the master password once and try again.
+        $first = $_.Exception.Message
+        if ($script:VaultUnlockTried) { throw "Couldn't read '$Name' from vault ${vault}: $first" }
+        $script:VaultUnlockTried = $true
+        try { Unlock-LabVault -Inventory $Inventory } catch { throw "Couldn't read '$Name' from vault ${vault} ($first). $($_.Exception.Message)" }
+        try { $value = Get-Secret -Vault $vault -Name $Name -AsPlainText -ErrorAction Stop }
+        catch { throw "Couldn't read '$Name' from vault ${vault} after unlocking it; the entry is probably missing: run ./setup/mgmt/Initialize-LabVault.ps1. ($($_.Exception.Message))" }
     }
+    $script:VaultUnlockTried = $false   # a later lock (timeout) may ask again
     if ($value -is [pscredential]) { $value = $value.GetNetworkCredential().Password }
     if (-not $value) { throw "Secret '$Name' is empty in vault $($Inventory.secrets.vault)." }
     [string] $value
+}
+
+# ── Git identity ──────────────────────────────────────────────────────────
+
+function Get-LabGitIdentity {
+    # The name and e-mail the pipeline's commits are made under, derived from
+    # site.yaml: the administrator whose username matches the signed-in account
+    # (with or without the -a suffix), else the first tier 0 administrator;
+    # e-mail <username>@<tenant domain> (their UPN). No separate site setting to
+    # fill in, and the same answer on every MGMT.
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] $Inventory)
+    $model  = $Inventory.identity.administrative_model
+    $admins = @($model.administrators)
+    $me     = [string] $env:USERNAME
+    if ($model.account_suffix -and $me.EndsWith($model.account_suffix)) { $me = $me.Substring(0, $me.Length - $model.account_suffix.Length) }
+    $a = @($admins | Where-Object { $_.username -eq $me })[0]
+    if (-not $a) { $a = @($admins | Where-Object { [int] $_.tier -eq 0 })[0] }
+    if (-not $a) { $a = $admins[0] }
+    if (-not $a) { throw 'site.yaml has no administrators; git needs a name and e-mail for commits.' }
+    [pscustomobject]@{
+        Name  = (("$($a.given_name) $($a.surname)").Trim() -replace '\s+', ' ')
+        Email = "$($a.username)@$($Inventory.identity.entra.tenant_domain)"
+    }
+}
+
+function Set-LabGitIdentity {
+    # Sets git's global user.name / user.email for the signed-in account when
+    # they aren't set yet (a new profile on a new MGMT). Never overwrites a
+    # value the person set themselves. Returns a one-line status.
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] $Inventory)
+    $git = Get-Command git -ErrorAction SilentlyContinue
+    if (-not $git) { return 'git not on PATH; identity not set' }
+    $id = Get-LabGitIdentity -Inventory $Inventory
+    $set = @()
+    foreach ($pair in @(@('user.name', $id.Name), @('user.email', $id.Email))) {
+        $current = & git config --global --get $pair[0] 2>$null
+        if (-not $current) { & git config --global $pair[0] $pair[1]; $set += "$($pair[0])=$($pair[1])" }
+    }
+    if ($set.Count -gt 0) { "git identity set for $env:USERNAME: $($set -join ', ')" } else { "git identity already set for $env:USERNAME" }
 }
 
 function Get-LabSecretCredential {
@@ -1037,7 +1099,7 @@ function Send-LabHandover {
         # and .git is hidden on Windows.
         Add-Type -AssemblyName System.IO.Compression.FileSystem
         [System.IO.Compression.ZipFile]::CreateFromDirectory($stage, $zip)
-        $remoteZip = 'C:\MidCoastLab\handover-repo.zip'
+        $remoteZip = Join-Path (Split-Path $h.repo_path -Parent) 'handover-repo.zip'
         $copied += Copy-LabFileToSession -Session $Session -Path $zip -Destination $remoteZip
         Invoke-Command -Session $Session -ArgumentList $remoteZip, $h.repo_path -ScriptBlock {
             param($Zip, $Dest)
@@ -1070,40 +1132,20 @@ function Send-LabHandover {
     # KeePass vault.
     $copied += Copy-LabFileToSession -Session $Session -Path $h.vault_path -Destination $h.vault_path
 
-    # Git refuses repos owned by another user ("dubious ownership"); the files
-    # were written by the remoting account, not your -a account.
-    Invoke-Command -Session $Session -ArgumentList $h.repo_path -ScriptBlock {
-        param($Dest)
-        $git = Join-Path $env:ProgramFiles 'Git\cmd\git.exe'
-        $dir = $Dest.Replace('\', '/')
-        $existing = & $git config --system --get-all safe.directory 2>$null
-        if (@($existing) -notcontains $dir) { & $git config --system --add safe.directory $dir }
-    }
-
-    # Only SYSTEM, Administrators and SG-ROLE-DomainAdmins may read the handover
-    # folder. The lab group is granted directly because UAC strips Administrators
-    # from a non-elevated token but leaves custom groups alone, so your -a account
-    # can use the repo without "Run as administrator".
+    # The same post-copy rules as MGMT-00 gets after its domain join
+    # (Join-LabDomain.ps1), from the same Lab.System functions, run on the new
+    # MGMT from the platform its bootstrap received: git may use the repo under
+    # any account (safe.directory), and only SYSTEM, Administrators and the Tier 0
+    # admin group may use C:\MidCoastLab.
     $adminGroup = "$($Inventory.identity.active_directory.netbios)\SG-ROLE-DomainAdmins"
-    # The protected ACL goes on the root only; everything below is reset to inherit it.
-    # (One "icacls /inheritance:r /grant:r ... /T" pass left the handed-over files with
-    # an empty ACL, unreadable by anyone, on the first real rotation.)
-    Invoke-Command -Session $Session -ArgumentList $adminGroup, $h.repo_path -ScriptBlock {
-        param($Group, $Repo)
+    $folderRoot = Split-Path $h.repo_path -Parent
+    Invoke-Command -Session $Session -ArgumentList $adminGroup, $h.repo_path, $folderRoot -ScriptBlock {
+        param($Group, $Repo, $Root)
         $ErrorActionPreference = 'Stop'
-        try {
-            $sid = ([Security.Principal.NTAccount] $Group).Translate([Security.Principal.SecurityIdentifier]).Value
-        } catch { throw "Can't resolve $Group on the new MGMT: $($_.Exception.Message)" }
-        $out = & icacls.exe 'C:\MidCoastLab' /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' "*${sid}:(OI)(CI)F" /Q 2>&1
-        if ($LASTEXITCODE -ne 0) { throw "icacls on C:\MidCoastLab failed: $out" }
-        $out = & icacls.exe 'C:\MidCoastLab\*' /reset /T /C /Q 2>&1
-        if ($LASTEXITCODE -ne 0) { throw "icacls /reset under C:\MidCoastLab failed: $out" }
-        # Prove it: a file deep in the repo must carry the lab group's access.
-        $probe = Join-Path $Repo 'inventory\lab.yaml'
-        $sids = @((Get-Acl -Path $probe).Access | ForEach-Object {
-            try { $_.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value } catch { $null } })
-        if ($sids -notcontains $sid) { throw "After locking down C:\MidCoastLab, $probe doesn't grant $Group. Check its ACL (icacls)." }
-    }
+        Import-Module 'C:\ProgramData\MidCoastLab\Platform\modules\Lab.System\Lab.System.psm1' -Force -DisableNameChecking
+        Add-LabGitSafeDirectory -Path $Repo
+        Set-LabMgmtFolderAcl -Group $Group -Root $Root -ProbePath (Join-Path $Repo 'inventory\lab.yaml')
+    } | ForEach-Object { Write-Host "   $_" }
     # Last step: the marker Complete requires. Its absence means the copy is partial.
     $marker = Join-Path (Split-Path $h.repo_path -Parent) 'HANDOVER.complete'
     Invoke-Command -Session $Session -ArgumentList $marker, $env:COMPUTERNAME, ($copied | ConvertTo-Json -Depth 3) -ScriptBlock {
@@ -1123,9 +1165,10 @@ function Clear-LabHandoverTarget {
     )
     $h = (Get-LabMgmtDefinition -Inventory $Inventory).handover
     $state = $Inventory.terraform.state.path
-    Invoke-Command -Session $Session -ArgumentList $h.repo_path, $h.vault_path, $state, (Join-Path (Split-Path $h.repo_path -Parent) 'HANDOVER.complete') -ScriptBlock {
-        param($Repo, $Vault, $State, $Marker)
-        foreach ($p in $Marker, $Vault, $State, "$State.backup", 'C:\MidCoastLab\handover-repo.zip') { Remove-Item -Path $p -Force -ErrorAction SilentlyContinue }
+    $root = Split-Path $h.repo_path -Parent
+    Invoke-Command -Session $Session -ArgumentList $h.repo_path, $h.vault_path, $state, (Join-Path $root 'HANDOVER.complete'), (Join-Path $root 'handover-repo.zip') -ScriptBlock {
+        param($Repo, $Vault, $State, $Marker, $Zip)
+        foreach ($p in $Marker, $Vault, $State, "$State.backup", $Zip) { Remove-Item -Path $p -Force -ErrorAction SilentlyContinue }
         if (Test-Path $Repo) { Remove-Item -Path $Repo -Recurse -Force -ErrorAction SilentlyContinue }
     }
 }
@@ -1203,6 +1246,15 @@ function Remove-LabComputerRecords {
     } finally { Remove-PSSession $session -ErrorAction SilentlyContinue }
 }
 
+function Write-LabCommitHint {
+    # The one line every pipeline run ends with: commit the ledger. Same wording
+    # everywhere, and the same as the guides.
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] [string] $Message)
+    Write-Host "Commit the ledger:  git add inventory/instances.yaml; git commit -m `"$Message`"; git push" -ForegroundColor Cyan
+    Write-Host '                    (skip git push if the repo has no remote)'
+}
+
 function Write-LabReport {
     [CmdletBinding()]
     param([Parameter(Mandatory)] $Report)
@@ -1216,11 +1268,11 @@ function Write-LabReport {
 Export-ModuleMember -Function Get-LabRepoRoot, Get-LabInventoryPath, Get-LabSitePath, Get-LabResolvedPath,
     Get-LabResolvedInventory, Export-LabResolvedInventory, Get-LabLedgerPath, Get-LabPlatformVersion, Get-LabRelease,
     Save-LabLedger, Get-LabCurrentTemplate, New-LabTemplateVersion, Remove-LabUnusedTemplates,
-    New-LabInstance, Set-LabInstanceState, Get-LabSecretText, Get-LabSecretCredential,
+    New-LabInstance, Set-LabInstanceState, Unlock-LabVault, Get-LabSecretText, Get-LabSecretCredential, Get-LabGitIdentity, Set-LabGitIdentity,
     Invoke-LabPveApi, Wait-LabPveTask, Test-LabPveVm, Invoke-LabTerraform, Connect-LabGuest, Wait-LabGuest,
     Get-LabVmMac, Get-LabVmGuestAddress,
     New-LabPayloadArchive, Publish-LabPayload, Get-LabGuestState, Wait-LabBootstrap, Get-LabValidationReport,
-    Invoke-LabRemoteValidation, Write-LabReport,
+    Invoke-LabRemoteValidation, Write-LabReport, Write-LabCommitHint,
     Get-LabMgmtDefinition, Get-LabHandoverLock, Assert-LabNotHandedOver, Assert-LabSafePlan,
     Register-LabInitialInstances, Remove-LabInstance, ConvertFrom-LabPlanJson, Get-LabPveToken, Stop-LabPveVm, Remove-LabPveVm,
     Deploy-LabInstance, New-LabMetadata, Get-LabGuestCredentials, Add-LabTailscaleSecret, Disconnect-LabGuestTailscale,

@@ -5,8 +5,10 @@
     C:\ProgramData\MidCoastLab\Logs\Validation (latest.json + timestamped).
 
 .DESCRIPTION
-    Runs as SYSTEM (read-only checks). Severity and recovery actions come
-    from catalog.psd1. To run it by hand on a DC (loads the modules and catalog):
+    Runs as SYSTEM (read-only checks). The common checks (NET, TS, MEM, EVAL)
+    come from Lab.Validation; this file adds the directory, DNS, SYSVOL, FSMO,
+    replication, time, LAPS and Remote Desktop checks. Severity and recovery
+    actions come from catalog.psd1. To run it by hand on a DC:
         C:\ProgramData\MidCoastLab\Platform\validate.ps1
 #>
 [CmdletBinding()]
@@ -21,17 +23,8 @@ $domain   = $Inventory.identity.active_directory.domain
 $domainDN = Get-LabDomainDN -Inventory $Inventory
 $me       = $env:COMPUTERNAME
 $myFqdn   = "$me.$domain".ToLower()
-$results  = @()
+$results  = @(Invoke-LabCommonChecks -Metadata $Metadata -Inventory $Inventory)
 $dcCount  = @(Get-ADDomainController -Filter * -Server localhost).Count
-
-$results += Invoke-LabCheck -Id 'NET-001' -Check {
-    $ip = Get-NetIPAddress -AddressFamily IPv4 -IPAddress $Metadata.ipv4 -ErrorAction SilentlyContinue
-    @{ Passed = [bool] ($ip -and $ip.PrefixOrigin -eq 'Manual'); Detail = "expected $($Metadata.ipv4) (manual)" }
-}
-
-$results += Invoke-LabCheck -Id 'NET-002' -Check {
-    @{ Passed = ($me -eq $Metadata.hostname.ToUpper()); Detail = "is $me, expected $($Metadata.hostname)" }
-}
 
 $results += Invoke-LabCheck -Id 'AD-001' -Check {
     $names = 'NTDS', 'ADWS', 'Netlogon', 'Kdc', 'DNS', 'DFSR', 'W32Time'
@@ -137,44 +130,13 @@ $results += Invoke-LabCheck -Id 'LAPS-002' -Check {
     @{ Passed = ($bad.Count -eq 0); Detail = if ($bad) { $bad -join '; ' } else { "DC OU links: $($links -join ', ')" } }
 }
 
-$results += Invoke-LabCheck -Id 'RDP-001' -Check {
-    # Remote Desktop on, listening, open to the lab subnet.
-    $problems = @()
-    if ((Get-ItemProperty 'HKLM:\System\CurrentControlSet\Control\Terminal Server').fDenyTSConnections -ne 0) { $problems += 'connections denied' }
-    $svc = Get-Service -Name TermService -ErrorAction SilentlyContinue
-    if (-not $svc -or $svc.Status -ne 'Running') { $problems += "TermService $(if ($svc) { $svc.Status } else { 'missing' })" }
-    if (-not (Get-NetTCPConnection -LocalPort 3389 -State Listen -ErrorAction SilentlyContinue)) { $problems += 'nothing listening on 3389' }
-    $rules = @(Get-NetFirewallRule -Group '@FirewallAPI.dll,-28752' -Direction Inbound -ErrorAction SilentlyContinue |
-        Where-Object { $_.Name -like 'RemoteDesktop-UserMode-In-*' -and $_.Enabled -eq 'True' })
-    if ($rules.Count -eq 0) { $problems += 'firewall rule not enabled' }
-    $scope = @($rules | Get-NetFirewallAddressFilter | ForEach-Object RemoteAddress) | Select-Object -Unique
-    @{ Passed = ($problems.Count -eq 0); Detail = if ($problems) { $problems -join '; ' } else { "from $($scope -join ', ')" } }
-}
+# Remote Desktop on, listening, open to the lab subnet.
+$results += Invoke-LabCheck -Id 'RDP-001' -Check { Test-LabRemoteDesktop }
 
 $results += Invoke-LabCheck -Id 'DNS-005' -Check {
     # No Tailscale address in AD's DNS: domain members would try to reach a DC on it.
     $bad = @(Get-LabTailnetDnsRecords -Domain $domain)
     @{ Passed = ($bad.Count -eq 0); Detail = if ($bad) { ($bad | ForEach-Object { "$($_.Name).$($_.Zone) -> $($_.Address)" }) -join '; ' } else { '' } }
-}
-
-$results += Invoke-LabCheck -Id 'TS-001' -Check {
-    # site.yaml tailscale.enabled: joined and connected.
-    if (-not $Inventory.tailscale.enabled) { return @{ Passed = $true; Detail = 'not enabled for this site' } }
-    $st = Get-LabTailscaleStatus
-    if (-not $st) { return @{ Passed = $false; Detail = 'Tailscale not installed, or not answering' } }
-    @{ Passed = ($st.BackendState -eq 'Running'); Detail = "state $($st.BackendState); $(@($st.TailscaleIPs) -join ', ')" }
-}
-
-$results += Invoke-LabCheck -Id 'MEM-001' -Check {
-    # Without it Proxmox can't balloon this VM (memory_min_mb in lab.yaml).
-    $svc = Get-Service -Name BalloonService -ErrorAction SilentlyContinue
-    @{ Passed = ($svc -and $svc.Status -eq 'Running'); Detail = if ($svc) { "BalloonService $($svc.Status)" } else { 'BalloonService not installed' } }
-}
-
-$results += Invoke-LabCheck -Id 'EVAL-001' -Check {
-    $days = (Get-LabRuntimeMetadata).EvaluationDaysLeft
-    if ($null -eq $days) { return @{ Passed = $true; Detail = 'not an evaluation license' } }
-    @{ Passed = ($days -gt 30); Detail = "$days days left"; Data = $days }
 }
 
 Complete-LabValidationReport -Results $results -Role 'DC' -OutputDirectory (Join-Path $Inventory.logging.path 'Validation')

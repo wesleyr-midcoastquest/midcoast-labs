@@ -6,8 +6,9 @@ replacing MGMT about **every two months** (each validation report's `EVAL-001` s
 days left). The first replacement is also the last step of the first build: it swaps the
 starter machine, MGMT-00, for a pipeline-built one.
 
-Run everything below on MGMT, in **PowerShell 7**, from `C:\MidCoastLab\repo`, with the
-vault unlocked (`Unlock-SecretVault -Name MidCoastLab`).
+Run everything below on MGMT, in **PowerShell 7**, from `C:\MidCoastLab\repo`. The scripts
+ask for the vault's master password when the vault is locked (or unlock it first:
+`Unlock-SecretVault -Name MidCoastLab`).
 
 MGMT runs the pipeline, so it can't destroy itself and start over. Replacing it is a
 handover between two machines. Every guest's WinRM firewall allows both MGMT slot
@@ -39,19 +40,27 @@ Desktop; RSAT is High, so only reported), then hands over the
 repo (with git history), Terraform state and KeePass vault, each hash-verified.
 Last, it locks the old MGMT: every pipeline script on it refuses to run, except Abort.
 
+Prepare ends by printing the next steps; they are the same as below.
+
 **2. On the new MGMT** (Remote Desktop as `<NETBIOS>\<you>-a`; a normal PowerShell 7 window is fine):
 ```powershell
 cd C:\MidCoastLab\repo
-git config --global user.name  "<Your Name>"; git config --global user.email "<you@example.com>"   # new profile
-./setup/mgmt/Initialize-LabVault.ps1 -DatabasePath C:\MidCoastLab\MidCoastLab.kdbx   # registers the vault for your account
+./setup/mgmt/Initialize-LabVault.ps1 -DatabasePath C:\MidCoastLab\MidCoastLab.kdbx   # registers the vault for your account; sets git identity
+./orchestration/Invoke-LabMgmtRotation.ps1 -Stage Complete -KeepOld   # shuts the old MGMT down, keeps its VM
+```
+Complete checks it can reach Proxmox and every DC, and that the handed-over Terraform
+state matches the ledger (creates or deletes stop it; in-place updates only warn). With
+`-KeepOld` it then only shuts the old MGMT down, so you can check the new one while a
+rollback is still possible.
+
+**3. When you're happy with the new MGMT**, still on it:
+```powershell
 ./orchestration/Invoke-LabMgmtRotation.ps1 -Stage Complete
 git add inventory/instances.yaml; git commit -m "MGMT rotation"; git push
 ```
-Complete checks it can reach Proxmox and every DC, and that the handed-over Terraform
-state matches the ledger (creates or deletes stop it; in-place updates only warn). Then it
-shuts the old MGMT down, destroys its VM and confirms it's gone, and only then removes
-its computer object and DNS records. **The first time, add `-KeepOld`** to only shut it down;
-run Complete again later to destroy it.
+It destroys the old VM and confirms it's gone, and only then removes its computer object
+and DNS records. (Skip `-KeepOld` in step 2 to do both at once.) Your git name and e-mail
+come from `site.yaml`'s administrator, so nothing needs typing for the new profile.
 
 **Rolling back:** until Complete destroys the old MGMT, run
 `Invoke-LabMgmtRotation.ps1 -Stage Abort` on it. After the handover this needs

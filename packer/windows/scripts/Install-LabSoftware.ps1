@@ -1,6 +1,13 @@
-# Install-LabSoftware.ps1: PowerShell 7 and Cloudbase-Init for the template.
-# Versions come from inventory (templates.*.build.software_versions) via
-# LAB_PWSH_VERSION and LAB_CBI_CHANNEL.
+<#
+.SYNOPSIS
+    Packer provisioner: installs PowerShell 7 and Cloudbase-Init into the template.
+
+.DESCRIPTION
+    Versions come from inventory (templates.<key>.build.software_versions) through
+    the environment variables LAB_PWSH_VERSION and LAB_CBI_CHANNEL, which
+    windows.pkr.hcl sets. Cloudbase-Init is installed but left stopped: it runs
+    on clones, not during the build.
+#>
 $ErrorActionPreference = 'Stop'
 $ProgressPreference    = 'SilentlyContinue'
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12

@@ -5,8 +5,10 @@ then (each validation report's `EVAL-001` shows the days left), one DC at a time
 a DC is also how a DC picks up a newer template, and how a broken DC is fixed: the lab
 replaces, never repairs.
 
-The replacement is a new DC from the current WIN2022-TEMPLATE version. The forest stays; only the machines change. Run from the active MGMT, in an **elevated**
-PowerShell 7 window (the script also points this machine's DNS at the new set of DCs).
+The replacement is a new DC from the current WIN2022-TEMPLATE version. The forest stays;
+only the machines change. Run from the active MGMT, from `C:\MidCoastLab\repo`, in an
+**elevated** PowerShell 7 window (the script also points this machine's DNS at the new set
+of DCs). It asks for the vault's master password when the vault is locked.
 
 **Safety net (optional):** snapshot **both** DCs first, on the node as root
 (`qm snapshot <vmid> pre-rotation` for each). On LVM-thin or ZFS a snapshot lives in the

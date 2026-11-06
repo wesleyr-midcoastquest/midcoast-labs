@@ -35,6 +35,9 @@
     -Force (Retire/Abort only) handles a DC that can't be reached: FSMO roles
     are seized and its metadata is cleaned out of AD instead of a demotion.
 
+.PARAMETER Stage
+    Add, Retire or Abort; see above.
+
 .EXAMPLE
     ./orchestration/Invoke-LabDcRotation.ps1 -Stage Add
     ./orchestration/Invoke-LabDcRotation.ps1 -Stage Retire
@@ -365,7 +368,7 @@ try {
             $family = (Get-LabRoleDefinition -Inventory $inv -Role 'DC').template
             $tplCur = Get-LabCurrentTemplate -Family $family
             $tplVm  = if ($tplCur) { Test-LabPveVm -Inventory $inv -Token $pveTok -VmId ([int] $tplCur.vmid) }
-            if (-not $tplVm -or -not $tplVm.template) { throw "No current $family template in Proxmox. Build it: ./orchestration/Build-LabTemplate.ps1" }
+            if (-not $tplVm -or -not $tplVm.template) { throw "No current $family template in Proxmox. Build it: ./orchestration/Build-LabTemplate.ps1 -Template $(Get-LabTemplateKey -Inventory $inv -Family $family)" }
 
             Write-Host "`n-- Health of the current DCs" -ForegroundColor Cyan
             if (-not (Test-DcHealth $m.Active)) { throw 'A current DC has Critical validation failures. Fix them before rotating; a rotation needs healthy replication.' }
@@ -438,8 +441,8 @@ try {
         if (-not $healthy) { Write-Warning 'An active DC has Critical failures (above). Fix them, or undo with -Stage Abort, before Retire.' }
 
         Write-Host "`n$($new.name) is a DC and holds what $($old.name) held; $($old.name) still runs as a third DC." -ForegroundColor Green
+        Write-LabCommitHint -Message "DC rotation: add $($new.name)"
         Write-Host @"
-Commit the ledger:  git add inventory/instances.yaml; git commit -m "DC rotation: add $($new.name)"
 
 Check what you like (dcdiag, repadmin /replsummary, sign-ins), then:
   Finish:  ./orchestration/Invoke-LabDcRotation.ps1 -Stage Retire     (demotes and destroys $($old.name))
@@ -470,7 +473,7 @@ workstation) should now use $(($active | ForEach-Object ipv4) -join ' / ').
         foreach ($i in $instances) { if ($i.role -eq 'DC' -and $i.replaces -eq $old.name) { $i.replaces = $null } }
         Save-LabLedger -Instances $instances
         Write-Host "`nDC rotation complete: $($old.name) retired." -ForegroundColor Green
-        Write-Host "Commit the ledger:  git add inventory/instances.yaml; git commit -m `"DC rotation: retire $($old.name)`""
+        Write-LabCommitHint -Message "DC rotation: retire $($old.name)"
     }
 
     # ════════════════════════════════════════════════════════════════════════
@@ -502,7 +505,7 @@ workstation) should now use $(($active | ForEach-Object ipv4) -join ' / ').
 
         $instances = @(Get-LabInstances -Path (Get-LabLedgerPath))
         Write-Host "`nRolled back: $($old.name) is active, $($new.name) is gone." -ForegroundColor Green
-        Write-Host "Commit the ledger:  git add inventory/instances.yaml; git commit -m `"DC rotation: abort $($new.name)`""
+        Write-LabCommitHint -Message "DC rotation: abort $($new.name)"
     }
     }
 } finally {

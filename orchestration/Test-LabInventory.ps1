@@ -224,10 +224,7 @@ foreach ($s in @($inv.servers)) {
         }
     }
 }
-if (@($findings | Where-Object Level -eq 'Error').Count -gt 0) {
-    $findings | Format-Table -AutoSize -Wrap | Out-String -Width 220 | Write-Host
-    if ($PassThru) { return $findings } else { exit 1 }
-}
+if (@($findings | Where-Object Level -eq 'Error').Count -gt 0) { return (Stop-Here) }
 
 # ── Semantic ──────────────────────────────────────────────────────────────
 
@@ -575,9 +572,6 @@ foreach ($i in $ledger) {
     if (-not $t) { Add-Finding 'Error' 'LedgerTemplate' "Ledger instance $($i.name) is pinned to template VMID $($i.template_vmid), which the ledger doesn't list." }
     elseif ($roleDef -and $t.family -ne $roleDef.template) { Add-Finding 'Error' 'LedgerTemplate' "Ledger instance $($i.name) ($($i.role)) is pinned to $($t.name), but $($i.role) uses $($roleDef.template)." }
 }
-
-# Advisory.
-
 
 # ── Report ────────────────────────────────────────────────────────────────
 $errors = @($findings | Where-Object Level -eq 'Error')

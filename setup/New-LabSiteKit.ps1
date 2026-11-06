@@ -9,7 +9,7 @@
     workstation is fine; MGMT-00 doesn't exist yet). It validates the
     inventory, resolves it, and writes:
 
-      out/site-kit/<site>/RUNBOOK.md        docs/mgmt-00.md with every value filled in
+      out/site-kit/<site>/RUNBOOK.md        docs/runbook.md with every value filled in
       out/site-kit/<site>/proxmox-setup.sh  the Proxmox setup script with this site's values
 
     Re-run it after any change to site.yaml. out/ is gitignored.
@@ -49,7 +49,8 @@ $admin    = @($inv.identity.administrative_model.administrators | Where-Object {
 if (-not $admin) { throw 'site.yaml needs at least one tier 0 administrator.' }
 $w11      = $inv.templates.windows_11
 
-# 3. Token values for the runbook (docs/mgmt-00.md uses {{token}}).
+# 3. Token values for the runbook (docs/runbook.md uses {{token}}). Every token the
+#    runbook uses must be here: Expand-LabTemplate refuses an unknown one.
 $tokens = [ordered]@{
     'site.name'          = $site
     'site.time_zone'     = $inv.environment.time_zone
@@ -60,6 +61,7 @@ $tokens = [ordered]@{
     'admin.account'      = "$($admin.username)$suffix"
     'tier0.group'        = 'SG-ROLE-DomainAdmins'
     'mgmt00.name'        = $mgmtDef.initial.hostname
+    'mgmt00.name_lower'  = ([string] $mgmtDef.initial.hostname).ToLowerInvariant()   # the tailnet device name
     'mgmt00.vmid'        = $mgmt00.vmid
     'mgmt00.ip'          = $mgmt00.ipv4
     'mgmt.b.ip'          = @($mgmtDef.slots | Where-Object id -ne $mgmtDef.initial.slot)[0].ipv4
@@ -80,6 +82,9 @@ $tokens = [ordered]@{
     'proxmox.endpoint'   = $inv.proxmox.endpoint
     'proxmox.pool'       = $inv.proxmox.pool
     'proxmox.bridge'     = $inv.network.bridge
+    'proxmox.vmid_base'  = $inv.proxmox.vmid_base
+    'proxmox.vmid_last'  = [int] $inv.proxmox.vmid_base + 149
+    'tailscale.enabled'  = $(if ($inv.tailscale.enabled) { 'true' } else { 'false' })
     'storage.vm'         = $inv.proxmox.storage.virtual_machines
     'storage.iso'        = $inv.proxmox.storage.iso_repository
     'iso.windows_server_2022'      = $inv.templates.windows_server_2022.build.iso
@@ -108,7 +113,7 @@ function Expand-LabTemplate([string] $Text, $Map) {
 }
 
 # 4. RUNBOOK.md
-$raw = Get-Content -Raw (Join-Path $repo 'docs/mgmt-00.md')
+$raw = Get-Content -Raw (Join-Path $repo 'docs/runbook.md')
 # Drop the "this page is a template" note first (it shows token syntax itself).
 $raw = $raw -replace '(?s)<!-- TEMPLATE-NOTE -->.*?<!-- /TEMPLATE-NOTE -->\s*', ''
 $runbook = Expand-LabTemplate $raw $tokens
@@ -161,6 +166,7 @@ $values = [ordered]@{
     MGMT00_LOCAL_USER  = 'LabAdmin'
     LAB_SUBNET         = $inv.network.subnet
     RDP_FROM           = (@($inv.network.remote_desktop_from | Where-Object { $_ }) -join ' ')
+    TAILSCALE_ENABLED  = $(if ($inv.tailscale.enabled) { '1' } else { '0' })   # MGMT-00 may join with a one-time key
     VAULT_NAME       = $inv.secrets.vault
     TOKEN_SECRET_NAMES = "$($inv.secrets.entries.proxmox_terraform_token) (terraform token), $($inv.secrets.entries.proxmox_packer_token) (packer token)"
 }

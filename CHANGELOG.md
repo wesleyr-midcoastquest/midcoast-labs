@@ -18,6 +18,63 @@ Two numbers, in `inventory/lab.yaml`:
 Every release section starts with what it needs: *nothing*, *rebuild templates*, *rotate
 DCs / MGMT*, or *site.yaml change*. Details and reasons: [docs/decisions.md](docs/decisions.md).
 
+## LAB-261105-04 (compatibility 1.5): MGMT-00 by script, scripts reference
+
+Needs: nothing for a running lab (`git pull`); the next DC or MGMT rotation carries the
+shared role code, and no template rebuild or `site.yaml` change is needed. Minor version
+because how MGMT-00 is built changed (an optional tailnet join during its install) and the
+first-build steps are now scripts. Closes issues #3–#17.
+
+Runbook (`docs/runbook.md`, was `docs/mgmt-00.md`, #17), now paste-and-run on MGMT-00:
+- **Step 5** names the folder first and uses two scripts (#5, #6, #7, #11):
+  `Install-MgmtTools.ps1` (elevated; `Set-ExecutionPolicy ... -Force`, so no prompt) then
+  new **`Initialize-LabRepo.ps1`**, which copies the repo to `C:\MidCoastLab\repo`, makes it a
+  git repository when it isn't one (no remote needed), sets the git identity and validates.
+  `Install-MgmtTools` ends by naming the next command.
+- **Git identity comes from `site.yaml`** (#13): `Set-LabGitIdentity` derives name and
+  e-mail from your administrator entry (`<username>@<tenant domain>`), on every account
+  and every MGMT; `Initialize-LabVault` and MGMT rotation `Complete` apply it. The
+  `git config --global` lines are gone from every guide.
+- **Step 6**: `Initialize-LabVault.ps1` creates the `.kdbx` itself with `keepassxc-cli`
+  (#8); the vault no longer has to be made in the GUI first.
+- **Step 8 is one script** (#12, #15): new **`Join-LabDomain.ps1`** points DNS at the
+  active DCs, joins the domain with `svc-domainjoin`, schedules the post-join rules
+  (Remote Desktop for the Tier 0 group, git `safe.directory`, the `C:\MidCoastLab` ACL) as a
+  one-shot SYSTEM task for the next start-up, and restarts. The "register the vault"
+  step is a code block.
+- **Step 9 and `Invoke-LabMgmtRotation -Stage Prepare` say the same thing** (#14):
+  `Complete -KeepOld` first, `Complete` to destroy. The guides and every script's closing
+  "commit the ledger" line use one wording (`Write-LabCommitHint`).
+- **Step 7 spells out `-Template windows_server_2022`** (#10); `Build-LabTemplate -Template`
+  is validated against `lab.yaml`'s template keys instead of a fixed list, and every
+  "build it first" message names the right key (`Get-LabTemplateKey`).
+- **"Starting over"** (the teardown commands, with your VMID block filled in) moved from
+  the README to the end of the runbook (#3).
+
+Added:
+- **MGMT-00 on the tailnet during its install** (#4): with `tailscale.enabled`,
+  `proxmox-setup.sh` asks for a **one-time** auth key (or takes `TAILSCALE_AUTHKEY`),
+  puts it on the root-only answer CD, and MGMT-00 joins at first logon; the CD is shredded
+  afterwards and the key never enters the site kit. Step 6 (`Join-LabTailnet.ps1`) then
+  switches it to the vault's reusable key with the policy and watchdog. Enter nothing to
+  skip.
+- **`docs/scripts.md`** (#16): every script, its parameters and switches, where it runs,
+  generated from the scripts' own help by `tools/New-LabScriptReference.ps1`;
+  `Export-LabRelease` refuses to export while it's stale (`-Check`).
+- **A locked vault asks for its password** (#9) instead of failing: `Get-LabSecretText`
+  prompts once per run. Every guide says so; `Unlock-SecretVault` is optional.
+
+Changed, code (one implementation each, shared by the hand-build and the pipeline):
+- `Lab.System`: `Enable-LabRemoteDesktop`, `Test-LabRemoteDesktop`,
+  `Grant-LabRemoteDesktopGroup`, `Set-LabMgmtFolderAcl`, `Add-LabGitSafeDirectory`,
+  `Join-LabTailnet` replace the copies in `dc.ps1`, `mgmt.ps1`, the validations and the
+  handover. `Lab.Validation`: `Invoke-LabCommonChecks` (NET, TS, MEM, EVAL) replaces the
+  copies in both validation scripts. Behaviour is unchanged.
+- `Build-LabTemplate` uses `Get-LabPveToken -Purpose packer`; the handover zip path comes
+  from inventory; an unused variable and a stray section in `Invoke-LabPhase` and
+  `Test-LabInventory` are gone; the Packer scripts have comment-based help; the catalog's
+  recovery notes name the current rotation commands.
+
 ## LAB-261105-03 (compatibility 1.4): README and NEW-SITE reorganised
 
 Needs: nothing (`git pull`). Documentation only; no script changes.

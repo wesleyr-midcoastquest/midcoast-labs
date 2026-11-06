@@ -8,10 +8,13 @@
 
       Start     toolchain (mgmt-tools.ps1), Remote Desktop for admins
       Join      join the domain into the MGMT placement OU, with svc-domainjoin
-      Finalize  Group Policy (including LAPS), then validation
+      Finalize  Remote Desktop for the Tier 0 group, Group Policy (including
+                LAPS), the tailnet, then validation
 
     The handover of the repo, Terraform state and vault is NOT done here; the
     outgoing MGMT pushes those during rotation (Invoke-LabMgmtRotation.ps1).
+    The hand-built MGMT-00 gets the equivalent of these stages from
+    setup/mgmt/Install-MgmtTools.ps1 and setup/mgmt/Join-LabDomain.ps1.
 
     Secrets used: svc-domainjoin; the Tailscale auth key, when site.yaml tailscale.enabled
 #>
@@ -30,29 +33,6 @@ function Step([string] $Next, [bool] $Reboot = $false) {
     [pscustomobject]@{ Next = $Next; Reboot = $Reboot }
 }
 
-function Join-LabTailnetIfEnabled {
-    # site.yaml tailscale.enabled: join the tailnet. A failure is logged as a
-    # warning (TS-001 reports it); the lab works without the tailnet.
-    param([switch] $Dc)
-    if (-not $Inventory.tailscale.enabled) { return }
-    try {
-        $key = [System.Net.NetworkCredential]::new('', (Get-LabSecret -Name $Inventory.secrets.entries.tailscale_authkey)).Password
-        if ($Dc) {
-            # Before the adapter gets an address: AD and DNS stay on the lab address.
-            Set-LabDcSingleHomed -Address $Metadata.ipv4 -Domain $Inventory.identity.active_directory.domain
-            Write-LabLog "DNS server and Netlogon limited to $($Metadata.ipv4)"
-        }
-        Write-LabLog "Tailscale: $(Install-LabTailscale -AuthKey $key -Hostname $Metadata.hostname)"
-        if ($Dc) {
-            Start-Sleep -Seconds 30
-            $n = Remove-LabTailnetDnsRecords -Domain $Inventory.identity.active_directory.domain
-            if ($n -gt 0) { Write-LabLog "Removed $n DNS record(s) pointing at a Tailscale address" -Level Warn }
-        }
-    } catch {
-        Write-LabLog "Tailscale skipped: $($_.Exception.Message)" -Level Warn
-    }
-}
-
 switch ($Stage) {
 
     'Start' {
@@ -69,24 +49,9 @@ switch ($Stage) {
         & (Join-Path $PSScriptRoot 'mgmt-tools.ps1') -Versions $def.software_versions -Rsat $rsat | Out-Null
 
         # Remote Desktop, so an admin (<user>-a) can sign in to finish the
-        # handover. Network Level Authentication stays on. Allowed only from the lab
-        # subnet and site.yaml network.remote_desktop_from.
-        # The Terminal Services provider (as Settings does) rather than the registry
-        # alone; the service set to start automatically; the firewall rules found by
-        # their language-independent group, and their absence is an error, not silence.
-        $ts = Get-CimInstance -Namespace 'root\cimv2\TerminalServices' -ClassName Win32_TerminalServiceSetting
-        $null = Invoke-CimMethod -InputObject $ts -MethodName SetAllowTSConnections -Arguments @{ AllowTSConnections = 1; ModifyFirewallException = 0 }
-        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name fDenyTSConnections -Value 0
-        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name UserAuthentication -Value 1
-        Set-Service -Name TermService -StartupType Automatic
-        Start-Service -Name TermService
-        $rdpRules = @(Get-NetFirewallRule -Group '@FirewallAPI.dll,-28752' -Direction Inbound -ErrorAction SilentlyContinue |
-            Where-Object { $_.Name -like 'RemoteDesktop-UserMode-In-*' })
-        if ($rdpRules.Count -eq 0) { throw 'No built-in Remote Desktop firewall rules (RemoteDesktop-UserMode-In-*) found.' }
-        # The lab subnet, plus site.yaml network.remote_desktop_from (e.g. Tailscale clients).
-        $rdpFrom = @(@($Inventory.network.subnet) + @($Inventory.network.remote_desktop_from) | Where-Object { $_ } | Select-Object -Unique)
-        $rdpRules | Set-NetFirewallRule -RemoteAddress $rdpFrom -Profile Any -Enabled True
-        Write-LabLog "Toolchain installed; Remote Desktop enabled from $($rdpFrom -join ', ') ($(($rdpRules | ForEach-Object Name) -join ', '))"
+        # handover: from the lab subnet and site.yaml network.remote_desktop_from.
+        $rdpFrom = @(@($Inventory.network.subnet) + @($Inventory.network.remote_desktop_from))
+        Write-LabLog "Toolchain installed; $(Enable-LabRemoteDesktop -RemoteAddress $rdpFrom)"
         # Reboot so PATH and the PowerShell 7 module paths are clean for the next stages.
         return (Step 'Join' $true)
     }
@@ -114,18 +79,13 @@ switch ($Stage) {
         # admins already (through Domain Admins), but an explicit grant doesn't
         # depend on that nesting. Standard accounts never sign in to MGMT: it's
         # a Tier 0 admin workstation.
-        $rdpGroup = "$($ad.netbios)\SG-ROLE-DomainAdmins"
-        $rdpUsers = Get-LocalGroup -SID 'S-1-5-32-555'   # Remote Desktop Users, any language
-        if (-not (Get-LocalGroupMember -Group $rdpUsers -ErrorAction SilentlyContinue | Where-Object Name -eq $rdpGroup)) {
-            Add-LocalGroupMember -Group $rdpUsers -Member $rdpGroup
-            Write-LabLog "Granted Remote Desktop to $rdpGroup"
-        }
+        Write-LabLog (Grant-LabRemoteDesktopGroup -Group "$($ad.netbios)\SG-ROLE-DomainAdmins")
         & gpupdate.exe /target:computer /force | Out-Null
         # Process LAPS now rather than waiting for the next policy cycle.
         if (Get-Command Invoke-LapsPolicyProcessing -ErrorAction SilentlyContinue) {
             try { Invoke-LapsPolicyProcessing } catch { Write-LabLog "LAPS processing deferred: $($_.Exception.Message)" -Level Warn }
         }
-        Join-LabTailnetIfEnabled
+        Join-LabTailnet -Inventory $Inventory -Metadata $Metadata
         return (Step $null)
     }
 

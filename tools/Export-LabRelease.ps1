@@ -32,6 +32,10 @@ $exclude = @('inventory/site.yaml', 'inventory/instances.yaml', 'terraform/.terr
 $release = (Select-String -Path (Join-Path $repo 'inventory/lab.yaml') -Pattern '^release:\s*"?([A-Za-z0-9-]+)' -List).Matches[0].Groups[1].Value
 if (-not $release) { throw 'lab.yaml has no release.' }
 
+# docs/scripts.md is generated from the scripts' help; a release must ship it current.
+& (Join-Path $PSScriptRoot 'New-LabScriptReference.ps1') -Check
+if ($LASTEXITCODE -ne 0) { throw 'docs/scripts.md is out of date: run ./tools/New-LabScriptReference.ps1, commit, and export again.' }
+
 New-Item -ItemType Directory -Path $Destination -Force | Out-Null
 $dest = (Resolve-Path $Destination).Path
 Get-ChildItem -Path $dest -Force | Where-Object Name -ne '.git' | Remove-Item -Recurse -Force
