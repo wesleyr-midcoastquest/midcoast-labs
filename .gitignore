@@ -11,3 +11,7 @@ crash.log
 # Generated
 inventory/resolved/
 out/
+
+# Editor and note-taking clutter
+.obsidian/
+*.base
