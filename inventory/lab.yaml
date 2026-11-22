@@ -15,7 +15,7 @@
 
 version: "1.6"                                   # CHANGED: 1.5 -> 1.6 (per-site Proxmox names, snapshot privileges, CERT lock)
                                                  # Compatibility number; changes rarely (see CHANGELOG.md).
-release: LAB-261121-00                           # ADDED: release name, LAB-<YYMMDD>-<NN>; every merged change gets a new one
+release: LAB-261122-00                           # ADDED: release name, LAB-<YYMMDD>-<NN>; every merged change gets a new one
 
 environment:
   name: MidCoast-Lab

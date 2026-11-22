@@ -3,6 +3,10 @@
 *.tfstate
 *.tfstate.*
 *.pkrvars.hcl
+# Notes of the secrets proxmox-setup.sh prints (they belong in the vault, not here:
+# Initialize-LabRepo.ps1 commits everything in the folder that isn't ignored)
+passwords
+passwords.*
 .terraform/
 .terraform.lock.hcl.bak
 packer_cache/
