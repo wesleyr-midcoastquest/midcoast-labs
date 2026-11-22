@@ -105,6 +105,16 @@ function Resolve-LabInventory {
     Set-LabValue $r 'network.static_range.end'   (ConvertTo-LabHostAddress -Subnet $net -HostNumber ([int] $Product.network.static_range.end_host))
 
     foreach ($k in 'cluster', 'node', 'endpoint', 'insecure_tls', 'vmid_base') { Set-LabValue $r "proxmox.$k" $Site.proxmox.$k }
+    # The lab's names on the cluster: the site's value when it sets one, else the
+    # product default; "{site}" in either becomes the site slug (1.6, issue #24).
+    $slug = ConvertTo-LabSiteSlug ([string] $Site.site.name)
+    Set-LabValue $r 'proxmox.site_slug' $slug
+    foreach ($k in 'pool', 'role', 'tag') {
+        $v = if ($Site.proxmox.$k) { [string] $Site.proxmox.$k } else { [string] $Product.proxmox.$k }
+        Set-LabValue $r "proxmox.$k" ($v.Replace('{site}', $slug))
+    }
+    $user = if ($Site.proxmox.service_account -and $Site.proxmox.service_account.user) { [string] $Site.proxmox.service_account.user } else { [string] $Product.proxmox.service_account.user }
+    Set-LabValue $r 'proxmox.service_account.user' ($user.Replace('{site}', $slug))
     Set-LabValue $r 'proxmox.storage' (Copy-LabObject $Site.proxmox.storage)
     # clone_mode: the product default, unless the site's storage needs 'full'.
     if ($Site.proxmox.clone_mode) { Set-LabValue $r 'proxmox.clone_mode' ([string] $Site.proxmox.clone_mode).ToLowerInvariant() }
@@ -133,6 +143,18 @@ function Resolve-LabInventory {
         }
     }
     $r
+}
+
+function ConvertTo-LabSiteSlug {
+    # site.name as it may appear inside a Proxmox pool, role, tag or user name:
+    # lower case, [a-z0-9-], no leading/trailing or doubled '-', at most 24
+    # characters. "MidCoast Quest" -> "midcoast-quest".
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] [AllowEmptyString()] [string] $Name)
+    $s = $Name.ToLowerInvariant() -replace '[^a-z0-9-]+', '-' -replace '-{2,}', '-'
+    $s = $s.Trim('-')
+    if ($s.Length -gt 24) { $s = $s.Substring(0, 24).TrimEnd('-') }
+    $s
 }
 
 function Import-LabInventory {
@@ -312,6 +334,6 @@ function Get-LabActiveDCs {
 
 Export-ModuleMember -Function Get-LabInventory, ConvertTo-LabYymmdd, New-LabHostname,
     Get-LabRoleDefinition, Get-LabTemplateKey, Get-LabDomainDN, ConvertTo-LabOUDistinguishedName,
-    Get-LabPrefixLength, Get-LabRoleAddresses, Get-LabInstances, Get-LabTemplateVersions, Get-LabActiveDCs,
+    Get-LabPrefixLength, Get-LabRoleAddresses, ConvertTo-LabSiteSlug, Get-LabInstances, Get-LabTemplateVersions, Get-LabActiveDCs,
     Get-LabTierOU, Get-LabOUTier, Get-LabComputerOUs, Get-LabGroupNames,
     ConvertTo-LabHostAddress, Resolve-LabInventory, Import-LabInventory

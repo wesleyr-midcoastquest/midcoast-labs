@@ -1,7 +1,13 @@
 # MidCoast Lab Architecture Program
 ## Print-Ready Executive Export
-### Version 1.5
+### Version 1.6
 
+> v1.6 (Nov 2026): several labs may share a cluster: pool, role, tag and provisioning
+> user are per-site inventory values (defaults unchanged for existing sites); the
+> provisioning role may snapshot and roll back (for CERT), and the pipeline refuses to
+> run during a CERT scenario; Reset-LabLedger.ps1 after a teardown. Rationale:
+> docs/decisions.md (1.6 sections).
+>
 > v1.5 (Nov 2026): MGMT-00 is set up by scripts (repo, vault, domain join, post-join rules)
 > and may join the tailnet during its install with a one-time key; git identity comes from
 > `site.yaml`; `Build-LabTemplate -Template` takes any inventory template key; every script
@@ -484,6 +490,10 @@ Terraform interacts with Proxmox using a dedicated service account.
 ```text
 terraform-prov@pve
 ```
+
+(v1.6: the pool, provisioning role, VM tag and this user are per-site names from the
+resolved inventory; new sites get `…-<site>` names so several labs can share a cluster,
+each on its own network segment and VMID block. Sites built before 1.6 keep these names.)
 
 Terraform never uses root credentials.
 

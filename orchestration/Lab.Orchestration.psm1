@@ -184,7 +184,7 @@ function Remove-LabUnusedTemplates {
         $vm = Test-LabPveVm -Inventory $Inventory -Token $Token -VmId ([int] $t.vmid)
         if (-not $vm) { Write-Host "Template $($t.name) (VMID $($t.vmid)) is already gone; dropping it from the ledger."; continue }
         $tags = @(([string] $vm.tags) -split '[;,\s]+')
-        if (-not $vm.template -or $tags -notcontains 'midcoast-lab' -or $vm.name -ne $t.name) {
+        if (-not $vm.template -or $tags -notcontains $Inventory.proxmox.tag -or $vm.name -ne $t.name) {
             Write-Warning "VMID $($t.vmid) is '$($vm.name)', not template $($t.name); leaving it alone. Check it by hand."
             $keep.Add($t); continue
         }

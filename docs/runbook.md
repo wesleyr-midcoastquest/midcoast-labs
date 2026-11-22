@@ -323,8 +323,8 @@ To rebuild from nothing, first save what you want from the current MGMT (your
 `setup/proxmox/proxmox-teardown.sh` to `{{proxmox.node}}` and, as root:
 
 ```bash
-bash proxmox-teardown.sh --vmid-base {{proxmox.vmid_base}} --dry-run   # what it would remove
-bash proxmox-teardown.sh --vmid-base {{proxmox.vmid_base}}             # asks you to type DESTROY
+bash proxmox-teardown.sh --vmid-base {{proxmox.vmid_base}} --pool {{proxmox.pool}} --user {{proxmox.user}} --role {{proxmox.role}} --tag {{proxmox.tag}} --dry-run   # what it would remove
+bash proxmox-teardown.sh --vmid-base {{proxmox.vmid_base}} --pool {{proxmox.pool}} --user {{proxmox.user}} --role {{proxmox.role}} --tag {{proxmox.tag}}             # asks you to type DESTROY
 ```
 
 It removes only the lab's own VMs in VMIDs `{{proxmox.vmid_base}}`–`{{proxmox.vmid_last}}`

@@ -101,6 +101,7 @@ offsets on their own subnet and base. Inventory changes are marked `CHANGED` or
   also creates the MGMT-00 VM, so the first build has no hand-typed site values.
 - **Fixed product names**: the pool (`MidCoast-Lab`), role, `terraform-prov@pve`, vault
   name and `midcoast-lab` tag are the same at every site. One lab per Proxmox cluster.
+  (Superseded in 1.6: see "Several labs on one cluster" below.)
 
 ## Inventory changes (v1.2 → v1.3): sizing, ballooning, linked clones
 
@@ -514,6 +515,40 @@ the runbook spells out `-Template windows_server_2022` for the same reason.
 generated from the scripts' own comment-based help by `tools/New-LabScriptReference.ps1`,
 so the help in the script is the one place to keep up to date; the generator runs before
 a release and refuses a script with no synopsis.
+
+## Several labs on one cluster (1.6)
+
+"One lab per Proxmox cluster" came from four cluster-wide names fixed in the product:
+the pool `MidCoast-Lab`, the user `terraform-prov@pve`, the role `MidCoastProvisioner`
+and the tag `midcoast-lab`. Sites were already separated by network (a /24 of their own
+behind OPNsense or an SDN VNet) and by VMID block; only the names stopped a second lab.
+
+**The names are now inventory.** `lab.yaml` keeps the four as defaults, `proxmox.pool`,
+`proxmox.role`, `proxmox.tag` and `proxmox.service_account.user`; `site.yaml` may set any
+of them, and `{site}` in a value becomes the site slug (`site.name`, lower case,
+`[a-z0-9-]`, 24 characters at most). The resolved inventory carries the final names, so
+Terraform, Packer, the orchestration, the site kit and CERT all read one place.
+
+**Defaults stay the pre-1.6 names; the template ships per-site ones.** A site built before
+1.6 has no override in its `site.yaml` and keeps `MidCoast-Lab` and friends, so nothing on
+its cluster has to be renamed or recreated and `git pull` is enough (minor version).
+`site.template.yaml` and `site.example.yaml` set `MidCoast-Lab-{site}` and so on, so every
+new site gets its own names without thinking about it. Deriving the defaults from
+`site.name` instead would have changed every existing lab's names on upgrade: a major
+version for the sake of a line in the template.
+
+**Ownership is checked, not assumed.** The pool's and user's comments name the site that
+created them; `proxmox-setup.sh check` and `Test-LabSite.ps1` refuse a pool or user that
+belongs to another site. A VM in this lab's VMID block that carries another lab's tag
+(`midcoast-lab*`, but not ours) is reported as an overlapping block, not as a stray VM.
+Ownership checks everywhere (`Test-LabSite`, `Remove-LabUnusedTemplates`,
+`Build-LabTemplate`, teardown) use the site's own tag, so one lab never counts another's
+VMs as its own.
+
+**Teardown takes the names from the runbook.** `proxmox-teardown.sh` keeps the pre-1.6
+names as defaults and accepts `--pool --user --role --tag`; the site kit's `RUNBOOK.md`
+("Starting over") prints the full command for the site, so it can never remove another
+site's pool by default.
 
 ## Known gaps
 

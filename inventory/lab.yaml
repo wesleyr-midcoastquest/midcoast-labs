@@ -84,7 +84,16 @@ proxmox:
 
   # node, endpoint, insecure_tls, storage, vmid_base: from site.yaml
 
+  # The four names a lab owns on the cluster. These are the DEFAULTS, the names
+  # every lab had before 1.6; a site may set any of them in site.yaml
+  # (proxmox.pool, proxmox.role, proxmox.tag, proxmox.service_account.user).
+  # "{site}" in a value is replaced by the site's slug (site.name, lower case,
+  # [a-z0-9-]), which is how two labs share one cluster: site.template.yaml
+  # ships them as MidCoast-Lab-{site} and so on, so a new site gets its own
+  # names; a site built before 1.6 has no override and keeps these.
   pool: MidCoast-Lab
+  role: MidCoastProvisioner                      # ADDED (1.6): the provisioning role (was fixed in the scripts)
+  tag:  midcoast-lab                             # ADDED (1.6): the tag that marks a VM as this lab's
 
   # ADDED (1.3): VMs are linked clones of their template: each stores only its
   # changes, so two DCs cost about one template plus a few GB each. Needs
@@ -95,7 +104,7 @@ proxmox:
 
   service_account:
 
-    user: terraform-prov@pve
+    user: terraform-prov@pve                     # site may override (proxmox.service_account.user); "{site}" allowed
     token_name: terraform
     packer_token_name: packer                    # ADDED: separate token for template builds
 

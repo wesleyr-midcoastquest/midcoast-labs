@@ -84,7 +84,7 @@ source "proxmox-iso" "windows" {
   vm_name              = "${upper(local.build.tag)}-BUILD-${local.stamp}"
   template_name        = "${local.tpl.template_name}-STAGING"
   template_description = "${local.tpl.operating_system} evaluation, built ${local.stamp} by Packer from ${try(local.inv.release, "")} (compatibility ${local.inv.version})."
-  tags                 = "midcoast-lab;template;${local.build.tag}"
+  tags                 = "${local.pve.tag};template;${local.build.tag}"
 
   os              = "win11"
   bios            = "ovmf"

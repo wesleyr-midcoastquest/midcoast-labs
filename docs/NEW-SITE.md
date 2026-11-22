@@ -15,7 +15,7 @@ in `inventory/lab.yaml`, the same at every site. You don't edit it.
 | Host numbers: DCs .10–.12, ADES .20, MGMT .30/.31, W11 .40; lab range .10–.49 | Lab subnet (a /24), gateway, DNS forwarders, NTP |
 | VMID offsets: servers +0–99, template versions +100–147, staging +148–149 | `vmid_base` (where your 150-ID block starts) |
 | OU tree, tiering, groups, service accounts, LAPS | Entra tenant domain (UPN suffix), your administrators |
-| Pool `MidCoast-Lab`, user `terraform-prov@pve`, vault `MidCoastLab` | Proxmox node, endpoint, bridge, storages, ISO names |
+| Vault `MidCoastLab`; default pool, role, tag and user names | Proxmox node, endpoint, bridge, storages, ISO names; the lab's pool, role, tag and user on the cluster |
 
 ## 1. Collect the information
 
@@ -61,9 +61,12 @@ The last column is where each goes in `site.yaml`.
 | ISO storage | One that holds **ISO images**, usually `local` | `proxmox.storage.iso_repository` |
 | A free VMID block | The lab uses 150 IDs from `vmid_base`. List what's taken with `pvesh get /cluster/resources --type vm` (or the web UI's tree) and pick a base with nothing in its 150, e.g. `3000` (servers 3000–3099, templates 3100–3149; MGMT-00 is 3020) | `proxmox.vmid_base` |
 | Clone mode | Only if your VM storage is a directory or NFS (no linked clones): `clone_mode: full`, which uses about twice the disk. Decide before the first build | `proxmox.clone_mode` |
+| The lab's names on the cluster | The pool, provisioning role, VM tag and provisioning user this lab owns. The template fills them in as `MidCoast-Lab-{site}`, `MidCoastProvisioner-{site}`, `midcoast-lab-{site}` and `terraform-prov-{site}@pve`, where `{site}` becomes your `site.name` in lower case (`[a-z0-9-]`); keep them. Only a lab built before 1.6 differs: its names are `MidCoast-Lab`, `MidCoastProvisioner`, `midcoast-lab`, `terraform-prov@pve`, so write those (or leave the four settings out) | `proxmox.pool`, `proxmox.role`, `proxmox.tag`, `proxmox.service_account.user` |
 
-One lab per Proxmox cluster: the pool, role and `terraform-prov@pve` user are cluster-wide
-names.
+Several labs can share one Proxmox cluster, as long as each has its own **network segment**
+(its /24, behind its own router or SDN VNet), its own **VMID block** (`vmid_base`) and
+its own **names** (the row above). `proxmox-setup.sh check` and `Test-LabSite.ps1` refuse
+a pool or user that belongs to another site, and a VMID block that overlaps another lab's.
 
 ### ISOs
 

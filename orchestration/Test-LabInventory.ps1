@@ -70,7 +70,7 @@ $siteSchema = [ordered]@{
     'site'     = @('name', 'time_zone')
     'identity' = @('active_directory', 'entra', 'administrators')
     'network'  = @('subnet', 'gateway', 'dns_forwarders', 'ntp', 'remote_desktop_from')
-    'proxmox'  = @('cluster', 'node', 'endpoint', 'insecure_tls', 'bridge', 'storage', 'vmid_base', 'clone_mode')
+    'proxmox'  = @('cluster', 'node', 'endpoint', 'insecure_tls', 'bridge', 'storage', 'vmid_base', 'clone_mode', 'pool', 'role', 'tag', 'service_account')
     'isos'     = @('windows_server_2022', 'windows_11', 'virtio')
     'tailscale' = @('enabled')
 }
@@ -131,6 +131,11 @@ if ("$($siteRaw.proxmox.endpoint)" -match '\.ts\.net[:/]|//100\.(6[4-9]|[7-9]\d|
 }
 if ($null -ne $siteRaw.proxmox.clone_mode -and "$($siteRaw.proxmox.clone_mode)" -cnotin 'linked', 'full') {
     Add-Finding 'Error' 'SiteSchema' "proxmox.clone_mode must be 'linked' or 'full', lower case (got '$($siteRaw.proxmox.clone_mode)')."
+}
+if ($siteRaw.proxmox.service_account) {
+    foreach ($q in @($siteRaw.proxmox.service_account.PSObject.Properties)) {
+        if ($q.Name -ne 'user') { Add-Finding 'Error' 'SiteSchema' "site.yaml has proxmox.service_account.$($q.Name); only 'user' may be set per site (token names are product settings)." }
+    }
 }
 if ("$($siteRaw.proxmox.endpoint)" -notmatch '^https://[^/\s]+(:\d+)?/?$') {
     Add-Finding 'Error' 'SiteSchema' "proxmox.endpoint '$($siteRaw.proxmox.endpoint)' should look like https://<host>:8006/."
@@ -369,6 +374,24 @@ foreach ($s in @($inv.servers)) {
 }
 
 # Linked clones live on the template's storage.
+# The lab's names on the cluster (1.6): what Proxmox accepts for a pool, role, tag
+# and user id, after "{site}" has been filled in. Two labs on one cluster need
+# different names, so a site that shares a cluster should use "{site}" in them.
+$nameRules = [ordered]@{
+    'proxmox.pool'                 = @($inv.proxmox.pool,                 '^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$',          'letters, digits, . _ -')
+    'proxmox.role'                 = @($inv.proxmox.role,                 '^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$',          'letters, digits, . _ -')
+    'proxmox.tag'                  = @($inv.proxmox.tag,                  '^[a-z0-9_][a-z0-9_.+-]{0,62}$',              'lower-case letters, digits, _ . + -')
+    'proxmox.service_account.user' = @($inv.proxmox.service_account.user, '^[A-Za-z0-9][A-Za-z0-9._-]{0,62}@[a-z0-9-]+$', '<name>@<realm>, e.g. terraform-prov-mylab@pve')
+}
+foreach ($k in $nameRules.Keys) {
+    $v, $rx, $hint = $nameRules[$k]
+    if (-not $v) { Add-Finding 'Error' 'ProxmoxNames' "$k is empty; lab.yaml must give a default." }
+    elseif ($v -notmatch $rx) { Add-Finding 'Error' 'ProxmoxNames' "$k '$v' isn't a name Proxmox accepts ($hint). site.name becomes the slug '$($inv.proxmox.site_slug)' inside it." }
+}
+if ($inv.proxmox.tag -eq 'midcoast-lab' -and $siteRaw.proxmox.tag) {
+    Add-Finding 'Info' 'ProxmoxNames' "proxmox.tag is the pre-1.6 default 'midcoast-lab'; another lab on this cluster must use a different tag."
+}
+if (-not $inv.proxmox.site_slug) { Add-Finding 'Error' 'ProxmoxNames' "site.name '$($siteRaw.site.name)' has no letters or digits to make a slug from." }
 if ($inv.proxmox.clone_mode -ceq 'linked' -and $inv.proxmox.storage.templates -ne $inv.proxmox.storage.virtual_machines) {
     Add-Finding 'Error' 'CloneMode' "Linked clones need templates and VMs on the same storage (site.yaml has templates: $($inv.proxmox.storage.templates), virtual_machines: $($inv.proxmox.storage.virtual_machines)). Use one storage for both, or set proxmox.clone_mode: full."
 }

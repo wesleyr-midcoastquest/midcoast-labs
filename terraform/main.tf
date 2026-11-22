@@ -45,7 +45,7 @@ resource "proxmox_virtual_environment_vm" "server" {
   vm_id       = each.value.vmid
   pool_id     = local.pve.pool
   description = "MidCoast Lab ${each.value.role}${each.value.slot != null ? " slot ${each.value.slot}" : ""}, built ${each.value.build_date}. Managed by Terraform; do not edit."
-  tags        = ["midcoast-lab", lower(each.value.role), "build-${each.value.build_date}"]
+  tags        = [local.pve.tag, lower(each.value.role), "build-${each.value.build_date}"]
 
   on_boot         = true
   started         = true

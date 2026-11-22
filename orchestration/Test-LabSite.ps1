@@ -131,6 +131,9 @@ if (-not $v.Ok) {
 
     $pool = Invoke-Probe "/pools/$($pve.pool)"
     if (-not $pool.Ok) { Add-Finding 'Error' 'Pool' "Pool '$($pve.pool)' not found or not visible: run the site kit's proxmox-setup.sh." }
+    elseif ($pool.Data.comment -and $pool.Data.comment -match 'MidCoast Lab site (\S+)' -and $Matches[1] -ne $inv.site.name) {
+        Add-Finding 'Error' 'Pool' "Pool '$($pve.pool)' belongs to site '$($Matches[1])', not '$($inv.site.name)'. Two labs on one cluster need different names: set proxmox.pool (and role, tag, service_account.user) in site.yaml, e.g. with {site}."
+    }
 
     # VMIDs: every ID the lab can ever claim.
     # Plain hashtable: an [ordered] dictionary treats integer keys as positions.
@@ -158,9 +161,11 @@ if (-not $v.Ok) {
             $vm = $byId[$id]
             $tags = @(([string] $vm.tags) -split '[;,\s]+')
             $manual = @($instances | Where-Object { [int] $_.vmid -eq $id -and $_.origin -eq 'manual' -and $_.name -eq $vm.name })
-            if ($tags -contains 'midcoast-lab' -or $manual.Count -gt 0) { continue }   # the lab's own
+            if ($tags -contains $pve.tag -or $manual.Count -gt 0) { continue }   # the lab's own (another lab's tag is "not ours")
             if ($id -eq $mgmt00Id -and $vm.name -eq $mgmt00Name) { continue }            # hand-built MGMT-00
-            Add-Finding 'Error' 'VMID' "VMID $id ($what) is in use by '$($vm.name)', which isn't a MidCoast Lab VM. Change proxmox.vmid_base in site.yaml."
+            $otherLab = @($tags | Where-Object { $_ -like 'midcoast-lab*' -and $_ -ne $pve.tag })
+            if ($otherLab.Count -gt 0) { Add-Finding 'Error' 'VMID' "VMID $id ($what) is '$($vm.name)', a VM of another MidCoast lab (tag $($otherLab[0])): its VMID block overlaps this site's. Change proxmox.vmid_base in site.yaml." }
+            else { Add-Finding 'Error' 'VMID' "VMID $id ($what) is in use by '$($vm.name)', which isn't a MidCoast Lab VM. Change proxmox.vmid_base in site.yaml." }
             continue
         }
         $free = Invoke-Probe "/cluster/nextid?vmid=$id"

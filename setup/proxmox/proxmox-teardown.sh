@@ -7,9 +7,13 @@
 #   bash proxmox-teardown.sh --vmid-base 3000            # shows the plan, asks, then removes
 #   bash proxmox-teardown.sh --vmid-base 3000 --dry-run  # shows the plan only
 #
+# A site with its own names (site.yaml proxmox.pool/role/tag/service_account.user,
+# 1.6) passes them: --pool --user --role --tag. The defaults are the pre-1.6 names.
+# Your RUNBOOK.md ("Starting over") has the full command for your site.
+#
 # Removes:
 #   - every VM in the lab's 150-VMID block (vmid_base .. vmid_base+149) that is the
-#     lab's (tagged midcoast-lab, or in the lab's pool): clones first, then templates;
+#     lab's (carrying the lab's tag, or in the lab's pool): clones first, then templates;
 #     stopped first, protection cleared, snapshots and disks with them
 #   - disks left behind in that block (vm-<id>-*, base-<id>-*) on the VM storages
 #   - the pool, the provisioning user (and its API tokens), the role
@@ -26,19 +30,21 @@ set -euo pipefail
 POOL="MidCoast-Lab"
 USER_ID="terraform-prov@pve"
 ROLE="MidCoastProvisioner"
+TAG="midcoast-lab"
 ANSWER_ISO="midcoast-mgmt00-answer.iso"
 VMID_BASE=""
 DRY_RUN=0
 ASSUME_YES=0
 INCLUDE_BACKUPS=0
 
-usage() { sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+usage() { sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --vmid-base)        VMID_BASE="$2"; shift 2 ;;
     --pool)             POOL="$2"; shift 2 ;;
     --user)             USER_ID="$2"; shift 2 ;;
     --role)             ROLE="$2"; shift 2 ;;
+    --tag)              TAG="$2"; shift 2 ;;
     --dry-run)          DRY_RUN=1; shift ;;
     --yes)              ASSUME_YES=1; shift ;;
     --include-backups)  INCLUDE_BACKUPS=1; shift ;;
@@ -53,10 +59,10 @@ FIRST=$VMID_BASE; LAST=$((VMID_BASE + 149))
 json() { python3 -c "$1"; }
 
 # ── Discover ──────────────────────────────────────────────────────────────
-echo "==> MidCoast Lab teardown: VMIDs $FIRST-$LAST, pool $POOL"
+echo "==> MidCoast Lab teardown: VMIDs $FIRST-$LAST, pool $POOL, tag $TAG, user $USER_ID, role $ROLE"
 VMS_JSON="$(pvesh get /cluster/resources --type vm --output-format json)"
 # lines: vmid node template(0/1) status name ours(0/1)
-VM_LINES="$(FIRST=$FIRST LAST=$LAST POOL="$POOL" VMS="$VMS_JSON" python3 - <<'PY'
+VM_LINES="$(FIRST=$FIRST LAST=$LAST POOL="$POOL" TAG="$TAG" VMS="$VMS_JSON" python3 - <<'PY'
 import json, os
 first, last, pool = int(os.environ["FIRST"]), int(os.environ["LAST"]), os.environ["POOL"]
 for v in sorted(json.loads(os.environ["VMS"]), key=lambda v: (int(v.get("template", 0)), int(v["vmid"]))):
@@ -64,7 +70,7 @@ for v in sorted(json.loads(os.environ["VMS"]), key=lambda v: (int(v.get("templat
     if not (first <= vid <= last):
         continue
     tags = [t for t in str(v.get("tags", "")).replace(",", ";").replace(" ", ";").split(";") if t]
-    ours = 1 if ("midcoast-lab" in tags or v.get("pool") == pool) else 0
+    ours = 1 if (os.environ["TAG"] in tags or v.get("pool") == pool) else 0
     print(vid, v.get("node", "?"), int(v.get("template", 0)), v.get("status", "?"), v.get("name", "?").replace(" ", "_"), ours)
 PY
 )"

@@ -74,6 +74,17 @@ proxmox:
   # Choose a base whose 150-ID block is free on your cluster, e.g. 3000.
   vmid_base: <number>
   # clone_mode: full                # only if your storage can't do linked clones
+  # The lab's own names on the cluster. "{site}" becomes your site's slug
+  # (site.name, lower case), so several labs can share a cluster; each lab
+  # also needs its own network segment and VMID block. Keep these unless you
+  # are adding a 1.6 site.yaml to a lab built before 1.6: that lab's names are
+  # MidCoast-Lab, MidCoastProvisioner, midcoast-lab and terraform-prov@pve
+  # (write those, or remove these four lines to get them as defaults).
+  pool: MidCoast-Lab-{site}
+  role: MidCoastProvisioner-{site}
+  tag: midcoast-lab-{site}
+  service_account:
+    user: terraform-prov-{site}@pve
 
 isos:                               # on the iso_repository storage
   windows_server_2022: <storage>:iso/<Server-2022-eval>.iso

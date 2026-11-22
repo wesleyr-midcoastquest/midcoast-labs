@@ -13,7 +13,8 @@
 #   - running on the lab's node
 #   - storages exist and accept disk images / ISO images
 #   - the lab bridge exists
-#   - every lab VMID is free, or already this lab's (tagged midcoast-lab)
+#   - every lab VMID is free, or already this lab's (carrying the lab's tag), and the
+#     pool and user aren't another site's
 #   - the ISOs are uploaded (Windows 11 + VirtIO are required for MGMT-00)
 # Setup:
 #   - pool, least-privilege role, terraform-prov@pve user, API tokens
@@ -42,7 +43,7 @@ set -euo pipefail
 #@@SITE_VALUES@@
 
 : "${SITE_NAME:?This is the template copy. Generate the site kit with ./setup/New-LabSiteKit.ps1 and run out/site-kit/<site>/proxmox-setup.sh instead.}"
-for v in NODE POOL USER_ID ROLE TOKENS TEMPLATE_STORAGE VM_STORAGE ISO_STORAGE BRIDGE CLONE_MODE LAB_VMIDS ISO_FILES \
+for v in NODE POOL USER_ID ROLE TAG TOKENS TEMPLATE_STORAGE VM_STORAGE ISO_STORAGE BRIDGE CLONE_MODE LAB_VMIDS ISO_FILES \
          MGMT00_VMID MGMT00_NAME MGMT00_CORES MGMT00_MEMORY MGMT00_DISK_GB MGMT00_ISO VIRTIO_ISO \
          MGMT00_IP MGMT00_PREFIX MGMT00_GATEWAY MGMT00_DNS MGMT00_TIME_ZONE MGMT00_IMAGE_INDEX MGMT00_DRIVER_OS \
          MGMT00_LOCAL_USER LAB_SUBNET TAILSCALE_ENABLED \
@@ -119,7 +120,7 @@ BRIDGE_TYPE="$(pvesh get "/nodes/$NODE/network/$BRIDGE" --output-format json 2>/
 
 # VMIDs: everything the lab can claim must be free, or already the lab's.
 pvesh get /cluster/resources --type vm --output-format json > /tmp/midcoast-vms.json
-COLLISIONS="$(LAB_VMIDS="$LAB_VMIDS" MGMT00_VMID="$MGMT00_VMID" MGMT00_NAME="$MGMT00_NAME" python3 - <<'PY'
+COLLISIONS="$(LAB_VMIDS="$LAB_VMIDS" TAG="$TAG" MGMT00_VMID="$MGMT00_VMID" MGMT00_NAME="$MGMT00_NAME" python3 - <<'PY'
 import json, os
 vms = {int(v["vmid"]): v for v in json.load(open("/tmp/midcoast-vms.json"))}
 out = []
@@ -129,9 +130,11 @@ for item in os.environ["LAB_VMIDS"].split():
     if not v:
         continue
     tags = [t for t in str(v.get("tags", "")).replace(",", ";").replace(" ", ";").split(";") if t]
-    own = "midcoast-lab" in tags or (vid == os.environ["MGMT00_VMID"] and v.get("name") == os.environ["MGMT00_NAME"])
+    own = os.environ["TAG"] in tags or (vid == os.environ["MGMT00_VMID"] and v.get("name") == os.environ["MGMT00_NAME"])
     if not own:
-        out.append(f"VMID {vid} ({what.replace('_', ' ')}) is used by '{v.get('name')}' on {v.get('node')}")
+        other = [t for t in tags if t.startswith("midcoast-lab") and t != os.environ["TAG"]]
+        who = f"another MidCoast lab (tag {other[0]}): its VMID block overlaps this site's" if other else f"'{v.get('name')}' on {v.get('node')}"
+        out.append(f"VMID {vid} ({what.replace('_', ' ')}) is used by {who}")
 print("\n".join(out))
 PY
 )"
@@ -140,6 +143,23 @@ if [[ -n "$COLLISIONS" ]]; then
   while IFS= read -r line; do fail "$line"; done <<< "$COLLISIONS"
   echo "  Pick a free 150-ID block and set proxmox.vmid_base in site.yaml, then regenerate the kit."
 fi
+
+# The lab's names must not belong to another site (two labs on one cluster each
+# need their own pool, role, tag and user; site.yaml sets them, "{site}" helps).
+POOL_OWNER="$(pveum pool list --output-format json | python3 -c "
+import json,sys,re
+for p in json.load(sys.stdin):
+    if p['poolid']=='$POOL':
+        m=re.search(r'MidCoast Lab site (\S+)', p.get('comment','') or ''); print(m.group(1) if m else '')
+" 2>/dev/null || true)"
+[[ -z "$POOL_OWNER" || "$POOL_OWNER" == "$SITE_NAME" ]] || fail "pool '$POOL' belongs to site '$POOL_OWNER', not '$SITE_NAME'. Set proxmox.pool (and role, tag, service_account.user) in site.yaml, e.g. with {site}, and regenerate the kit."
+USER_OWNER="$(pveum user list --output-format json | python3 -c "
+import json,sys,re
+for u in json.load(sys.stdin):
+    if u['userid']=='$USER_ID':
+        m=re.search(r'site (\S+)', u.get('comment','') or ''); print(m.group(1) if m else '')
+" 2>/dev/null || true)"
+[[ -z "$USER_OWNER" || "$USER_OWNER" == "$SITE_NAME" ]] || fail "user '$USER_ID' belongs to site '$USER_OWNER', not '$SITE_NAME'. Set proxmox.service_account.user in site.yaml and regenerate the kit."
 
 MGMT00_EXISTS=0
 qm status "$MGMT00_VMID" >/dev/null 2>&1 && MGMT00_EXISTS=1
@@ -200,7 +220,8 @@ fi
 
 echo "==> User $USER_ID"
 pveum user list --output-format json | python3 -c "import json,sys; sys.exit(0 if any(u['userid']=='$USER_ID' for u in json.load(sys.stdin)) else 1)" \
-  || pveum user add "$USER_ID" --comment "MidCoast Lab provisioning (Terraform/Packer). Tokens only."
+  || pveum user add "$USER_ID" --comment "MidCoast Lab provisioning (Terraform/Packer) for site $SITE_NAME. Tokens only."
+pveum user modify "$USER_ID" --comment "MidCoast Lab provisioning (Terraform/Packer) for site $SITE_NAME. Tokens only." >/dev/null 2>&1 || true
 
 echo "==> ACLs"
 pveum acl modify "/pool/$POOL"                     --users "$USER_ID" --roles "$ROLE"
@@ -228,8 +249,8 @@ done
 # ── MGMT-00 ───────────────────────────────────────────────────────────────
 echo "==> $MGMT00_NAME (VMID $MGMT00_VMID)"
 if qm status "$MGMT00_VMID" >/dev/null 2>&1; then
-  echo "  exists; making sure it's in pool $POOL and tagged midcoast-lab"
-  qm set "$MGMT00_VMID" --tags 'midcoast-lab;mgmt' >/dev/null
+  echo "  exists; making sure it's in pool $POOL and tagged $TAG"
+  qm set "$MGMT00_VMID" --tags "$TAG;mgmt" >/dev/null
   pvesh get "/pools/$POOL" --output-format json | python3 -c "import json,sys; sys.exit(0 if any(int(m.get('vmid',-1))==$MGMT00_VMID for m in json.load(sys.stdin).get('members',[])) else 1)" \
     || pveum pool modify "$POOL" --vms "$MGMT00_VMID"
   # An unattended install an earlier run started and didn't see finish.
@@ -463,7 +484,7 @@ PS1
   unset LOCAL_PW PW_B64
 
   qm create "$MGMT00_VMID" \
-    --name "$MGMT00_NAME" --pool "$POOL" --tags 'midcoast-lab;mgmt' \
+    --name "$MGMT00_NAME" --pool "$POOL" --tags "$TAG;mgmt" \
     --ostype win11 --machine q35 --bios ovmf \
     --efidisk0 "$VM_STORAGE:1,efitype=4m,pre-enrolled-keys=1" \
     --tpmstate0 "$VM_STORAGE:1,version=v2.0" \

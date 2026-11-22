@@ -85,7 +85,7 @@ $left = Test-LabPveVm -Inventory $inv -Token $token -VmId $stage
 if ($left) {
     # Only ever delete a VM that is provably this lab's leftover build.
     $isBuild = $left.name -like '*-BUILD-*' -or $left.name -eq "$($tpl.template_name)-STAGING"   # Packer renames it on success
-    if (@(([string] $left.tags) -split '[;,\s]+') -notcontains 'midcoast-lab' -or -not $isBuild) {
+    if (@(([string] $left.tags) -split '[;,\s]+') -notcontains $inv.proxmox.tag -or -not $isBuild) {
         throw "VMID $stage holds '$($left.name)', which isn't a MidCoast Lab build VM; refusing to delete it. Check proxmox.vmid_base in site.yaml."
     }
     Write-Host "Removing leftover staging VM $stage"
@@ -138,7 +138,7 @@ try {
     Wait-LabPveTask -Inventory $inv -Token $token -Upid (Invoke-LabPveApi -Inventory $inv -Token $token -Method POST -Path "/nodes/$node/qemu/$final/template")
 
     $desc = "$($tpl.operating_system) golden image $($version.name). Built $(Get-Date -Format 'yyyy-MM-dd HH:mm') from platform $(Get-LabPlatformVersion). Managed by Build-LabTemplate.ps1; deleted automatically once superseded and unused."
-    $null = Invoke-LabPveApi -Inventory $inv -Token $token -Method PUT -Path "/nodes/$node/qemu/$final/config" -Body @{ description = $desc; tags = "midcoast-lab;template;$($tpl.build.tag)" }
+    $null = Invoke-LabPveApi -Inventory $inv -Token $token -Method PUT -Path "/nodes/$node/qemu/$final/config" -Body @{ description = $desc; tags = "$($inv.proxmox.tag);template;$($tpl.build.tag)" }
 
     # Record it: the new version is current, the previous one superseded.
     # Re-read first: the build took an hour, and the ledger may have changed.
