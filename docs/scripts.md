@@ -10,6 +10,7 @@ The scripts' comment-based help is the source of this page; `./tools/New-LabScri
 | `orchestration/Invoke-LabDcRotation.ps1` | Replaces a domain controller with a fresh one from the current WIN2022 template, in two stages with a checkpoint between them. | PowerShell 7 |
 | `orchestration/Invoke-LabMgmtRotation.ps1` | Replaces MGMT, the machine that runs the pipeline, with a fresh one built from WIN11-TEMPLATE. | PowerShell 7 |
 | `orchestration/Invoke-LabPhase.ps1` | Runs a deployment phase: inventory validation -> Terraform -> bootstrap -> validation. | PowerShell 7 |
+| `orchestration/Reset-LabLedger.ps1` | Resets the ledger and Terraform state after a lab has been torn down, so the pipeline can build again from nothing (runbook, "Starting over"). | PowerShell 7 |
 | `orchestration/Test-LabInventory.ps1` | Inventory validation: syntax, schema and semantic rules, for the product design (lab.yaml), the site settings (site.yaml), and the resolved result. | PowerShell 7 |
 | `orchestration/Test-LabSite.ps1` | Live pre-flight check of the site: does this Proxmox and this network match site.yaml, and is everything the lab will claim actually free? | PowerShell 7 |
 | `setup/New-LabSiteKit.ps1` | Generates the site kit: a filled-in runbook and the Proxmox setup script, from inventory/lab.yaml + inventory/site.yaml. | PowerShell 7 |
@@ -198,6 +199,38 @@ Phases 2 and 3 are not implemented yet.
 ./orchestration/Invoke-LabPhase.ps1 -Phase 1 -Retry
 ```
 
+### `orchestration/Reset-LabLedger.ps1`
+
+Resets the ledger and Terraform state after a lab has been torn down, so the pipeline can build again from nothing (runbook, "Starting over").
+
+Runs: PowerShell 7.
+
+proxmox-teardown.sh destroys the lab's VMs on Proxmox, but the ledger
+(inventory/instances.yaml) lives in the repo and still lists the old DCs,
+MGMT and template versions, and C:\MidCoastLab\state still holds Terraform
+state for them. The next Invoke-LabPhase then believes the lab is deployed
+(issue #20). This script:
+  1. Asks Proxmox about every VMID the ledger lists. It REFUSES to run if any
+     listed instance or template still exists, so it can't wipe a live lab:
+     retire machines with the rotations, or tear the site down first.
+  2. Empties instances:, drops every template version that is gone from
+     Proxmox (a version that still exists is kept), removes the Terraform
+     state file and its backup, and the handover and CERT lock files.
+  3. Commits the ledger (git add + commit; push is left to you).
+Run it on the machine that will run the pipeline next (MGMT-00 of the new
+build), after Initialize-LabRepo.ps1. A fresh clone of your repo carries
+the old ledger too, so a new MGMT-00 needs it as much as an old one.
+
+| Parameter | Required | Default | Meaning |
+|---|---|---|---|
+| `-PlanOnly` |  |  | Show what would change; write nothing. |
+| `-SkipProxmox` |  |  | Don't ask Proxmox whether the listed VMs exist (for a ledger that belongs to a Proxmox you can no longer reach). Dangerous with a live lab: without the check, nothing stops the reset. Prefer tearing down, then resetting. |
+
+```powershell
+./orchestration/Reset-LabLedger.ps1 -PlanOnly
+./orchestration/Reset-LabLedger.ps1
+```
+
 ### `orchestration/Test-LabInventory.ps1`
 
 Inventory validation: syntax, schema and semantic rules, for the product design (lab.yaml), the site settings (site.yaml), and the resolved result.
@@ -293,7 +326,8 @@ on MGMT-00, in a normal PowerShell 7 window, after Install-MgmtTools.ps1.
 1. Copies this folder to the repo path from lab.yaml (handover.repo_path,
    C:\MidCoastLab\repo) unless it is already there, including site.yaml.
 2. Makes it a git repository if it isn't one (a copied or extracted folder
-   has no .git), and commits everything. You don't need a remote: the
+   has no .git), sets core.filemode=false (a clone copied from Linux would
+   otherwise show every .sh file as modified), and commits everything. You don't need a remote: the
    pipeline only needs the local history. Add a private remote later if you
    want a copy elsewhere (README, Requirements).
 3. Sets git's user.name and user.email for your account, from site.yaml's
@@ -313,14 +347,22 @@ Creates the KeePass vault if needed, registers it for your account, and fills in
 Runs: PowerShell 7.
 
 1. If the database doesn't exist yet, creates it with keepassxc-cli (asks
-   for a new master password, twice). Keep that password outside the lab:
-   without it and the .kdbx, the lab's secrets are gone.
+   for a new master password, twice; at least 12 characters). Keep that
+   password outside the lab: without it and the .kdbx, the lab's secrets
+   are gone.
 2. Registers the database as the SecretManagement vault named in lab.yaml
    (secrets.vault) for the account running this script, and unlocks it.
+   A wrong master password is asked again (three tries), and nothing is
+   written until the vault really opens.
 3. For each secret the inventory names:
      - Proxmox token secrets: asks you (paste from proxmox-setup.sh's output)
      - the Tailscale auth key, when site.yaml tailscale.enabled: asks you
-     - everything else: generates a random 24-character password
+     - your administrators' <username> and <username>-a accounts: asks
+       whether to generate each password or let you choose it (12+
+       characters, three character classes); -GeneratePasswords skips the
+       question and generates them all
+     - everything else (built-in Administrator, DSRM, service accounts):
+       generates a random 24-character password
    Existing entries are never changed.
 4. Sets your git identity from site.yaml (Set-LabGitIdentity), since this
    runs once per account on every MGMT.
@@ -331,6 +373,7 @@ existing vault and reports every entry as 'exists'.
 | Parameter | Required | Default | Meaning |
 |---|---|---|---|
 | `-DatabasePath <string>` | yes |  | The .kdbx file, outside the repo: lab.yaml handover.vault_path (C:\MidCoastLab\MidCoastLab.kdbx). |
+| `-GeneratePasswords` |  |  | Generate every account password without asking, including your own <username> and <username>-a accounts (read them later with Get-Secret -Vault <vault> -Name <account> -AsPlainText). |
 
 ```powershell
 ./setup/mgmt/Initialize-LabVault.ps1 -DatabasePath C:\MidCoastLab\MidCoastLab.kdbx
@@ -430,7 +473,8 @@ authoritative collision check):
   - running on the lab's node
   - storages exist and accept disk images / ISO images
   - the lab bridge exists
-  - every lab VMID is free, or already this lab's (tagged midcoast-lab)
+  - every lab VMID is free, or already this lab's (carrying the lab's tag), and the
+    pool and user aren't another site's
   - the ISOs are uploaded (Windows 11 + VirtIO are required for MGMT-00)
 Setup:
   - pool, least-privilege role, terraform-prov@pve user, API tokens
@@ -465,9 +509,13 @@ again from scratch. Keeps your ISOs.
 
 Run as root on the lab's node (proxmox.node in site.yaml):
 
+A site with its own names (site.yaml proxmox.pool/role/tag/service_account.user,
+1.6) passes them: --pool --user --role --tag. The defaults are the pre-1.6 names.
+Your RUNBOOK.md ("Starting over") has the full command for your site.
+
 Removes:
   - every VM in the lab's 150-VMID block (vmid_base .. vmid_base+149) that is the
-    lab's (tagged midcoast-lab, or in the lab's pool): clones first, then templates;
+    lab's (carrying the lab's tag, or in the lab's pool): clones first, then templates;
     stopped first, protection cleared, snapshots and disks with them
   - disks left behind in that block (vm-<id>-*, base-<id>-*) on the VM storages
   - the pool, the provisioning user (and its API tokens), the role

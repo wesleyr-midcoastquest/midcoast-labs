@@ -81,9 +81,10 @@ your `site.yaml` and ledger for your own site: if something doesn't work for you
 product change, so send it back to the repo's owner and every site gets it.
 
 **5. Start over.** `setup/proxmox/proxmox-teardown.sh` removes a site from Proxmox
-(only the lab's own VMs, pool, user and role; your ISOs stay) so it can be built again.
-The commands, with your site's values, are at the end of your `RUNBOOK.md` ("Starting
-over").
+(only the lab's own VMs, pool, user and role; your ISOs stay) so it can be built again;
+`orchestration/Reset-LabLedger.ps1` then resets the ledger and Terraform state in your
+repo, which still describe the old lab. The commands, with your site's values, are at
+the end of your `RUNBOOK.md` ("Starting over").
 
 Not built yet: Phase 2 (a Windows 11 end-user workstation) and Phase 3 (Entra Connect).
 
@@ -212,6 +213,7 @@ orchestration/        runs on the active MGMT (PowerShell 7)
   Invoke-LabPhase.ps1
   Invoke-LabMgmtRotation.ps1
   Invoke-LabDcRotation.ps1
+  Reset-LabLedger.ps1     after a teardown: empties the ledger and removes the Terraform state
   Lab.Orchestration.psm1
 setup/
   New-LabSiteKit.ps1                   writes out/site-kit/<site>/ (RUNBOOK.md, proxmox-setup.sh)

@@ -18,6 +18,72 @@ Two numbers, in `inventory/lab.yaml`:
 Every release section starts with what it needs: *nothing*, *rebuild templates*, *rotate
 DCs / MGMT*, or *site.yaml change*. Details and reasons: [docs/decisions.md](docs/decisions.md).
 
+## LAB-261121-00 (compatibility 1.6): several labs per cluster, CERT, fixes from the v1.5 build
+
+Needs: **re-run the site kit's `proxmox-setup.sh`** on the node (role update only: it adds
+two privileges to the provisioning role and a site comment to the user; nothing is
+recreated), then `git pull`. No `site.yaml` change: a site built before 1.6 keeps its
+Proxmox names. Minor version because the templates' tag and the lab's names on the
+cluster are now inventory values, and a new optional `site.yaml` setting exists.
+Closes #19, #20, #21, #22, #23, #24.
+
+**Public repo clean-up.** `inventory/site.yaml` (a real site's), `.obsidian/` and
+`Untitled.base` were committed to `master` on 2026-11-06 by mistake and are removed;
+editor clutter is gitignored. If your clone predates this release, `git pull` removes
+them. They are also rewritten out of the history of the public repo, so a clone made
+before this release needs `git fetch` and a reset onto the new `master` rather than a
+plain pull.
+
+Added:
+- **Several labs on one cluster** (#24). The pool, provisioning role, VM tag and
+  provisioning user are inventory values: `lab.yaml` keeps the pre-1.6 names
+  (`MidCoast-Lab`, `MidCoastProvisioner`, `midcoast-lab`, `terraform-prov@pve`) as
+  defaults, and `site.yaml` may set `proxmox.pool`, `proxmox.role`, `proxmox.tag` and
+  `proxmox.service_account.user`, with `{site}` standing for the site slug (`site.name`,
+  lower case, `[a-z0-9-]`). `site.template.yaml` and `site.example.yaml` ship
+  `MidCoast-Lab-{site}` and friends, so every new site gets its own names. Each lab still
+  needs its own network segment and VMID block. `proxmox-setup.sh check` and
+  `Test-LabSite.ps1` refuse a pool or user another site created (its comment names the
+  site) and report a VM of another lab inside this block as an overlapping VMID block;
+  every ownership check uses the site's tag. `proxmox-teardown.sh` takes
+  `--pool --user --role --tag` (the runbook's "Starting over" prints them for your site).
+  Validation checks the resolved names against what Proxmox accepts. NEW-SITE.md,
+  decisions.md and architecture.md no longer say "one lab per cluster".
+- **Snapshots for CERT** (#23). The provisioning role gains `VM.Snapshot` and
+  `VM.Snapshot.Rollback`, so CERT (the break/fix scenario runner) can snapshot and roll
+  back the lab's VMs with the lab's own token. While a CERT scenario is active
+  (`C:\MidCoastLab\CERT.lock`, `handover.cert_lock_path` in `lab.yaml`), `Invoke-LabPhase`,
+  both rotations, `Build-LabTemplate` and every Terraform apply refuse to run, the same
+  way they do for `HANDOVER.lock`: a rotation inside a scenario would be undone by the
+  rollback and leave the ledger describing machines that no longer exist.
+- **`orchestration/Reset-LabLedger.ps1`** (#20). After `proxmox-teardown.sh`, the ledger
+  in the repo and the Terraform state still describe the old lab, and Phase 1 said
+  *already deployed*. The script empties `instances:`, drops template versions that are
+  gone from Proxmox, removes the Terraform state and the lock files, and commits. It
+  refuses while any listed VM still exists, so it can't reset a live lab. `Test-LabSite`
+  now reports an active instance or current template that is missing from Proxmox as an
+  error pointing at it; `Invoke-LabPhase -Phase 1` checks the active DCs exist before
+  saying "already deployed"; the teardown prints the reminder; runbook "Starting over"
+  has the step.
+
+Changed:
+- **`Initialize-LabVault.ps1`** (#19): the password rules are printed before the prompt;
+  a wrong master password is asked again (three tries) and nothing is written until the
+  vault really opens (before, every `Set-Secret` "succeeded" against a locked vault and
+  stored nothing); the passwords of your own `<username>` and `<username>-a` accounts can
+  be chosen (12+ characters, three classes) or generated, asked once per run;
+  `-GeneratePasswords` skips the question. A database created in the same run is
+  unlocked with the password you just chose, not asked again.
+- **git `core.filemode=false`** on the repo (#22): set by `Initialize-LabRepo.ps1` and by
+  the MGMT handover (`Set-LabGitRepoConfig` in `Lab.System`), since a clone copied from
+  Linux keeps `core.filemode=true` and every `.sh` file then shows as modified on Windows
+  and blocks merges. `Test-LabSite.ps1` warns when it's still true.
+- Runbook (#21): step 4 says to wait for Windows Update to finish before the toolchain,
+  with a PowerShell check for "still installing / restart pending"; step 5 says to wait
+  for the RSAT lines before moving on.
+
+Docs: `docs/scripts.md` regenerated (new script and parameters).
+
 ## LAB-261105-04 (compatibility 1.5): MGMT-00 by script, scripts reference
 
 Needs: nothing for a running lab (`git pull`); the next DC or MGMT rotation carries the
