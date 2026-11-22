@@ -761,14 +761,35 @@ function Get-LabHandoverLock {
     if ($path -and (Test-Path $path)) { Get-Content -Path $path -Raw | ConvertFrom-Json } else { $null }
 }
 
+function Get-LabCertLock {
+    # CERT (the break/fix scenario runner, a separate project) writes this file
+    # while a scenario is active: the lab's VMs are snapshotted and will be
+    # rolled back. The file is JSON (scenario, started, snapshot set) but any
+    # content counts as locked.
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] $Inventory)
+    $path = (Get-LabMgmtDefinition -Inventory $Inventory).handover.cert_lock_path
+    if (-not $path -or -not (Test-Path $path)) { return $null }
+    try { Get-Content -Path $path -Raw | ConvertFrom-Json } catch { [pscustomobject]@{ scenario = '(unreadable)'; path = $path } }
+}
+
 function Assert-LabNotHandedOver {
     # After a MGMT handover, the old MGMT must never change the lab again:
     # its Terraform state and ledger are no longer authoritative.
+    # The same check refuses to run while a CERT scenario is active: a rotation
+    # or a phase in the middle of a scenario would be undone by its rollback,
+    # and the ledger would then describe machines that no longer exist.
     [CmdletBinding()]
     param([Parameter(Mandatory)] $Inventory)
     $lock = Get-LabHandoverLock -Inventory $Inventory
     if ($lock) {
         throw "This MGMT handed over to $($lock.handed_over_to) ($($lock.ipv4)) at $($lock.at). Run the pipeline from there, or roll back with Invoke-LabMgmtRotation.ps1 -Stage Abort."
+    }
+    $cert = Get-LabCertLock -Inventory $Inventory
+    if ($cert) {
+        $what = if ($cert.scenario) { "scenario '$($cert.scenario)'" } else { 'a scenario' }
+        $since = if ($cert.started) { " since $($cert.started)" } else { '' }
+        throw "A CERT $what is active$since (lock: $((Get-LabMgmtDefinition -Inventory $Inventory).handover.cert_lock_path)). Roll it back or close it in CERT first; the pipeline won't change a lab that is about to be rolled back."
     }
 }
 
@@ -1136,7 +1157,8 @@ function Send-LabHandover {
     # (Join-LabDomain.ps1), from the same Lab.System functions, run on the new
     # MGMT from the platform its bootstrap received: git may use the repo under
     # any account (safe.directory), and only SYSTEM, Administrators and the Tier 0
-    # admin group may use C:\MidCoastLab.
+    # admin group may use C:\MidCoastLab; core.filemode off, since .git came from
+    # another machine (issue #22).
     $adminGroup = "$($Inventory.identity.active_directory.netbios)\SG-ROLE-DomainAdmins"
     $folderRoot = Split-Path $h.repo_path -Parent
     Invoke-Command -Session $Session -ArgumentList $adminGroup, $h.repo_path, $folderRoot -ScriptBlock {
@@ -1144,6 +1166,7 @@ function Send-LabHandover {
         $ErrorActionPreference = 'Stop'
         Import-Module 'C:\ProgramData\MidCoastLab\Platform\modules\Lab.System\Lab.System.psm1' -Force -DisableNameChecking
         Add-LabGitSafeDirectory -Path $Repo
+        Set-LabGitRepoConfig -Path $Repo
         Set-LabMgmtFolderAcl -Group $Group -Root $Root -ProbePath (Join-Path $Repo 'inventory\lab.yaml')
     } | ForEach-Object { Write-Host "   $_" }
     # Last step: the marker Complete requires. Its absence means the copy is partial.
@@ -1273,7 +1296,7 @@ Export-ModuleMember -Function Get-LabRepoRoot, Get-LabInventoryPath, Get-LabSite
     Get-LabVmMac, Get-LabVmGuestAddress,
     New-LabPayloadArchive, Publish-LabPayload, Get-LabGuestState, Wait-LabBootstrap, Get-LabValidationReport,
     Invoke-LabRemoteValidation, Write-LabReport, Write-LabCommitHint,
-    Get-LabMgmtDefinition, Get-LabHandoverLock, Assert-LabNotHandedOver, Assert-LabSafePlan,
+    Get-LabMgmtDefinition, Get-LabHandoverLock, Get-LabCertLock, Assert-LabNotHandedOver, Assert-LabSafePlan,
     Register-LabInitialInstances, Remove-LabInstance, ConvertFrom-LabPlanJson, Get-LabPveToken, Stop-LabPveVm, Remove-LabPveVm,
     Deploy-LabInstance, New-LabMetadata, Get-LabGuestCredentials, Add-LabTailscaleSecret, Disconnect-LabGuestTailscale,
     Copy-LabFileToSession, Send-LabHandover, Clear-LabHandoverTarget, Test-LabHandoverComplete, Set-LabHandoverLock, Remove-LabHandoverLock, Remove-LabComputerRecords

@@ -10,7 +10,8 @@
     1. Copies this folder to the repo path from lab.yaml (handover.repo_path,
        C:\MidCoastLab\repo) unless it is already there, including site.yaml.
     2. Makes it a git repository if it isn't one (a copied or extracted folder
-       has no .git), and commits everything. You don't need a remote: the
+       has no .git), sets core.filemode=false (a clone copied from Linux would
+       otherwise show every .sh file as modified), and commits everything. You don't need a remote: the
        pipeline only needs the local history. Add a private remote later if you
        want a copy elsewhere (README, Requirements).
     3. Sets git's user.name and user.email for your account, from site.yaml's
@@ -60,6 +61,10 @@ try {
         if ($LASTEXITCODE -ne 0) { throw 'git init failed.' }
         Write-Host "Initialised a git repository in $target (no remote; the pipeline doesn't need one)"
     }
+    # A clone made on Linux and copied here keeps core.filemode=true, and every
+    # .sh file then shows as modified on Windows (issue #22).
+    Import-Module (Join-Path $target 'platform/modules/Lab.System/Lab.System.psm1') -Force -DisableNameChecking
+    Write-Host (Set-LabGitRepoConfig -Path $target)
     & git add -A
     if (& git status --porcelain) {
         & git commit -q -m "MidCoast Lab: $($inv.site.name)"

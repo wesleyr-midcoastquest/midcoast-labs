@@ -336,6 +336,24 @@ function Set-LabMgmtFolderAcl {
     "${Root}: SYSTEM, Administrators and $Group"
 }
 
+function Set-LabGitRepoConfig {
+    # Per-clone git settings a repo needs on Windows. core.filemode=false: a
+    # clone made on Linux (or copied from one, .git included) records
+    # core.filemode=true, and on Windows every executable file (setup/proxmox/*.sh)
+    # then shows as modified (old mode 100755 / new mode 100644), which
+    # git checkout can't clear and which makes git merge refuse. The repo on
+    # MGMT-00 is usually such a copy, and a MGMT handover carries .git along.
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] [string] $Path)
+    $git = Get-Command git -ErrorAction SilentlyContinue
+    if (-not $git) { $git = Join-Path $env:ProgramFiles 'Git\cmd\git.exe' } else { $git = $git.Source }
+    if (-not (Test-Path $git)) { throw "git not found at $git." }
+    if (-not (Test-Path (Join-Path $Path '.git'))) { throw "$Path isn't a git repository." }
+    $current = & $git -C $Path config --local --get core.filemode 2>$null
+    if ($current -ne 'false') { & $git -C $Path config --local core.filemode false }
+    "git core.filemode: false ($Path)"
+}
+
 function Add-LabGitSafeDirectory {
     # Git refuses a repo owned by another account ("dubious ownership"): the
     # repo on a new MGMT was written by the remoting account, on MGMT-00 by the
@@ -521,6 +539,6 @@ Export-ModuleMember -Function Get-LabState, Set-LabState, Initialize-LabSecretSt
     Get-LabSecret, Get-LabCredential, Remove-LabSecrets, Get-LabPrimaryAdapter, Set-LabStaticAddress,
     Set-LabDnsClient, Test-LabComputerName, Wait-LabCondition, Invoke-LabAsCredential, Restart-LabComputer,
     Enable-LabRemoteDesktop, Get-LabRemoteDesktopRules, Test-LabRemoteDesktop, Grant-LabRemoteDesktopGroup,
-    Set-LabMgmtFolderAcl, Add-LabGitSafeDirectory,
+    Set-LabMgmtFolderAcl, Add-LabGitSafeDirectory, Set-LabGitRepoConfig,
     Test-LabTailnetAddress, Get-LabTailscaleExe, Get-LabTailscaleStatus, Install-LabTailscale, Join-LabTailnet,
     Set-LabTailscalePolicy, Disconnect-LabTailscale

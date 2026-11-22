@@ -174,6 +174,10 @@ WANT=(
   VM.Config.CDROM VM.Config.CPU VM.Config.Cloudinit VM.Config.Disk VM.Config.HWType
   VM.Config.Memory VM.Config.Network VM.Config.Options
   VM.Monitor VM.GuestAgent.Audit
+  # 1.6: CERT snapshots every lab VM (RAM included) before a scenario and rolls
+  # them back afterwards, with this token. The vmstate volume is covered by
+  # Datastore.AllocateSpace above.
+  VM.Snapshot VM.Snapshot.Rollback
 )
 KNOWN="$(pvesh get /access/roles/Administrator --output-format json \
   | python3 -c 'import json,sys; d=json.load(sys.stdin); print(" ".join(sorted(d.keys())))')"

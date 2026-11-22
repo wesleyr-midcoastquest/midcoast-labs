@@ -191,4 +191,9 @@ if [[ $FAILED -gt 0 ]]; then
   echo "Finished with $FAILED problem(s) above; re-run to retry (it only removes what's still there)."; exit 1
 fi
 echo "Done. Proxmox is clear of the lab; ISOs kept."
-echo "Still to do outside Proxmox: remove the lab's machines in the Tailscale admin console."
+echo "Still to do outside Proxmox:"
+echo "  - The ledger (inventory/instances.yaml in your repo) and the Terraform state still describe"
+echo "    the lab you just removed, and the pipeline would refuse to build. On the machine that runs"
+echo "    the pipeline next (after Initialize-LabRepo.ps1 on a new MGMT-00):"
+echo "        ./orchestration/Reset-LabLedger.ps1"
+echo "  - Remove the lab's machines in the Tailscale admin console."

@@ -62,6 +62,13 @@ function Invoke-Probe {
 $repoRoot = Get-LabRepoRoot
 if (-not (Test-Path (Join-Path $repoRoot '.git'))) {
     Add-Finding 'Error' 'Repo' "$repoRoot isn't a git repository (a copied folder, not a clone?). Run ./setup/mgmt/Initialize-LabRepo.ps1 from it (runbook step 5)."
+} elseif ($IsWindows -and (Get-Command git -ErrorAction SilentlyContinue)) {
+    # core.filemode=true on Windows (a clone copied from Linux) makes every .sh
+    # file look modified and blocks merges (issue #22).
+    $fm = & git -C $repoRoot config --local --get core.filemode 2>$null
+    if ($fm -eq 'true') {
+        Add-Finding 'Warning' 'Repo' "git core.filemode is true in $repoRoot; on Windows the .sh files will show as modified and block merges. Fix: git -C $repoRoot config core.filemode false"
+    }
 }
 
 # ── Proxmox ───────────────────────────────────────────────────────────────
@@ -164,6 +171,22 @@ if (-not $v.Ok) {
     }
     if ($unverified.Count -gt 0) {
         Add-Finding 'Warning' 'VMID' "Couldn't verify VMIDs $($unverified -join ', ') with this token; the root-side check in proxmox-setup.sh covers them."
+    }
+
+    # The ledger must describe machines that exist. After proxmox-teardown.sh (or a
+    # VM deleted by hand) the ledger in the repo still lists the old lab, and the
+    # pipeline would think it is deployed (issue #20).
+    if ($visible.Ok) {
+        $gone = @()
+        foreach ($i in @($instances | Where-Object { $_.state -in 'building', 'active', 'retiring' })) {
+            if (-not $byId.ContainsKey([int] $i.vmid)) { $gone += "$($i.name) (VMID $($i.vmid), $($i.state))" }
+        }
+        foreach ($t in @((Get-LabTemplateVersions -Path (Get-LabLedgerPath)) | Where-Object state -eq 'current')) {
+            if (-not $byId.ContainsKey([int] $t.vmid)) { $gone += "template $($t.name) (VMID $($t.vmid), current)" }
+        }
+        if ($gone.Count -gt 0) {
+            Add-Finding 'Error' 'Ledger' "The ledger lists machines that don't exist on Proxmox: $($gone -join '; '). The ledger describes a lab that is gone: reset it with ./orchestration/Reset-LabLedger.ps1 (it refuses while any listed VM still exists), then run again. For a single VM deleted by hand, remove its entry from inventory/instances.yaml and the Terraform state instead."
+        }
     }
 }
 

@@ -126,7 +126,19 @@ after the domain join), then delete the file as the script says (`shred -u ...`)
    ```
    If something's off, `C:\ProgramData\MidCoastLab\mgmt00-setup.log` says what the
    first-logon setup did.
-2. Install Windows updates (Settings, Windows Update) and restart until none are left.
+2. **Install Windows updates and wait for them to finish.** Settings, Windows Update,
+   *Check for updates*; restart when asked; repeat until it says *You're up to date* and
+   no restart is pending. This takes longer than it looks: a fresh evaluation image
+   downloads a cumulative update of a gigabyte or more, and "Installing" can sit at one
+   percentage for ten minutes. Don't start step 5 while an update is still installing or
+   a restart is pending: the toolchain installer and RSAT (which also comes from Windows
+   Update) will fail or stall behind it. To check from PowerShell instead of the Settings
+   page:
+   ```powershell
+   Get-Service wuauserv, TrustedInstaller | Format-Table Name, Status   # both Stopped = nothing installing
+   Test-Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired'   # True = restart first
+   ```
+   (`TrustedInstaller` running on its own for a while is normal right after a restart.)
 
 ## 5. Toolchain and repo
 
@@ -150,7 +162,10 @@ after the domain join), then delete the file as the script says (`shred -u ...`)
    Deployment Tools (for `oscdimg.exe`), RSAT and the PowerShell modules, straight from
    each vendor (the same installer every pipeline-built MGMT runs). It also creates
    `{{lab.root}}` and grants your account access, so the next steps don't need elevation.
-   About 20 minutes; RSAT comes from Windows Update.
+   About 20 minutes; RSAT comes from Windows Update, so wait for the script to print its
+   closing lines before moving on, even when the window looks idle (an RSAT capability
+   can take several minutes with no output). If it reports a capability as
+   *installed; restart Windows to finish*, restart before step 5.3.
 3. **Put the repo in place.** Close that window and open a **new PowerShell 7** window
    (Start, type `pwsh`; not elevated), then:
    ```powershell
@@ -170,11 +185,15 @@ after the domain join), then delete the file as the script says (`shred -u ...`)
    cd {{repo.path}}
    ./setup/mgmt/Initialize-LabVault.ps1 -DatabasePath {{vault.path}}
    ```
-   It creates `{{vault.path}}` (asks you for a new master password, twice), registers it as
-   vault `{{vault.name}}` for your account, asks for the two Proxmox token secrets (and,
-   when `tailscale.enabled` is `true`, your Tailscale auth key), and generates every other
-   password the inventory names. **Back up the `.kdbx` and its master password outside
-   the lab**: without them the lab's secrets are gone.
+   It creates `{{vault.path}}` (asks you for a new master password, twice; 12 characters
+   or more), registers it as vault `{{vault.name}}` for your account and opens it (a wrong
+   master password is asked again; nothing is written until the vault really opens), asks
+   for the two Proxmox token secrets (and, when `tailscale.enabled` is `true`, your
+   Tailscale auth key), then asks whether to **generate** the passwords of your own
+   accounts (`<username>` and `<username>-a`) or let you **choose** them (12+ characters,
+   three character classes), and generates every other password the inventory names.
+   `-GeneratePasswords` skips that question. **Back up the `.kdbx` and its master
+   password outside the lab**: without them the lab's secrets are gone.
 
    The Tailscale key for the vault is the one every lab machine uses: make it in the admin
    console (Settings, Keys) **reusable**, **tagged** (e.g. `tag:midcoast-lab`) and **not
@@ -313,3 +332,18 @@ It removes only the lab's own VMs in VMIDs `{{proxmox.vmid_base}}`–`{{proxmox.
 role. It keeps your ISOs, and backups unless you add `--include-backups`. Remove the lab's
 machines in the Tailscale admin console too, then begin again at step 3 (the router and
 the ISOs are still there).
+
+**Reset the ledger before step 7.** The teardown can't touch your repo, so
+`inventory/instances.yaml` still lists the old DCs, MGMT and template versions (a fresh
+clone of your repo carries them too), and `{{state.path}}` may still hold their Terraform
+state; with either in place `Test-LabSite.ps1` fails with *the ledger lists machines that
+don't exist* and Phase 1 won't run. On the new {{mgmt00.name}}, after step 5:
+
+```powershell
+cd {{repo.path}}
+./orchestration/Reset-LabLedger.ps1 -PlanOnly   # what it would remove
+./orchestration/Reset-LabLedger.ps1             # empties the ledger, removes the state, commits
+```
+
+It refuses to run while any machine it lists still exists on Proxmox, so it can't reset a
+live lab by mistake.

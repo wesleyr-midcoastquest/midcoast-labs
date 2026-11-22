@@ -66,6 +66,10 @@ try {
     $dcs = @($instances | Where-Object role -eq 'DC')
     $finalOnly = $false
     if (@($dcs | Where-Object state -eq 'active').Count -ge $want) {
+        # Belt and braces after the site pre-flight: "already deployed" must be true.
+        $token = Get-LabPveToken -Inventory $inv
+        $missing = @($dcs | Where-Object state -eq 'active' | Where-Object { -not (Test-LabPveVm -Inventory $inv -Token $token -VmId ([int] $_.vmid)) } | ForEach-Object name)
+        if ($missing.Count -gt 0) { throw "The ledger says $($missing -join ', ') is an active DC, but no such VM exists on Proxmox. The lab was torn down or the VM deleted by hand: reset the ledger with ./orchestration/Reset-LabLedger.ps1 (see the runbook, 'Starting over')." }
         if (-not $Retry -or $PlanOnly) {
             Write-Host "Phase 1 is already deployed ($want active DCs). DC replacement is done by rotation, not by this phase. (-Retry re-runs the final DNS and validation step.)" -ForegroundColor Yellow
             return

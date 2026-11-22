@@ -280,6 +280,10 @@ servers:
       repo_path: C:\MidCoastLab\repo
       vault_path: C:\MidCoastLab\MidCoastLab.kdbx
       lock_path: C:\MidCoastLab\HANDOVER.lock
+      # ADDED (1.6): while CERT (the break/fix scenario runner) has a scenario
+      # active it writes this file; the pipeline refuses to change the lab until
+      # the scenario is rolled back or closed.
+      cert_lock_path: C:\MidCoastLab\CERT.lock
 
   - role: W11
 
