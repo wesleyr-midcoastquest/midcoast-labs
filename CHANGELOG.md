@@ -18,6 +18,17 @@ Two numbers, in `inventory/lab.yaml`:
 Every release section starts with what it needs: *nothing*, *rebuild templates*, *rotate
 DCs / MGMT*, or *site.yaml change*. Details and reasons: [docs/decisions.md](docs/decisions.md).
 
+## LAB-261122-00 (compatibility 1.6): ignore password notes
+
+Needs: nothing (`git pull`).
+
+Fixed:
+- `.gitignore` covers `passwords` and `passwords.*`. `Initialize-LabRepo.ps1` commits
+  everything in the folder that isn't ignored, so a note of the secrets that
+  `proxmox-setup.sh` prints, saved beside the repo's files, went into git. Other file
+  names are still committed: keep such notes outside the folder. A file that is already
+  tracked stays tracked until `git rm --cached <file>`.
+
 ## LAB-261121-00 (compatibility 1.6): several labs per cluster, CERT, fixes from the v1.5 build
 
 Needs: **re-run the site kit's `proxmox-setup.sh`** on the node (role update only: it adds
