@@ -90,8 +90,15 @@ $results += Invoke-LabCheck -Id 'FSMO-001' -Check {
 
 $results += Invoke-LabCheck -Id 'REPL-001' -Check {
     if ($dcCount -le 1) { return @{ Passed = $true; Detail = 'single DC; nothing to replicate' } }
-    $f = @(Get-ADReplicationFailure -Target $me -Scope Server -ErrorAction Stop | Where-Object { $_.FailureCount -gt 0 })
-    @{ Passed = ($f.Count -eq 0); Detail = if ($f) { ($f | ForEach-Object { "$($_.Partner): $($_.LastError)" }) -join '; ' } else { '' } }
+    # Each inbound link's own failure count, for every naming context (the DNS
+    # application partitions too). Not Get-ADReplicationFailure: it reads the
+    # KCC's in-memory failure cache, which a successful replication doesn't
+    # clear, so a DC rolled back to a snapshot with RAM kept failing this check
+    # for a failure from before the snapshot.
+    $rows = @(& repadmin.exe /showrepl $me /csv 2>$null | ConvertFrom-Csv | Where-Object { $_.'Number of Failures' -match '^\d+$' })
+    if (-not $rows) { return @{ Passed = $false; Detail = 'repadmin /showrepl listed no inbound replication links' } }
+    $bad = @($rows | Where-Object { [int] $_.'Number of Failures' -gt 0 })
+    @{ Passed = ($bad.Count -eq 0); Detail = if ($bad) { ($bad | ForEach-Object { "$($_.'Naming Context') from $($_.'Source DSA'): $($_.'Number of Failures') failure(s), last status $($_.'Last Failure Status')" }) -join '; ' } else { "$($rows.Count) inbound link(s), no failures" } }
 }
 
 $results += Invoke-LabCheck -Id 'REPL-002' -Check {

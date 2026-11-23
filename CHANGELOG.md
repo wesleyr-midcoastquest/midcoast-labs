@@ -18,6 +18,19 @@ Two numbers, in `inventory/lab.yaml`:
 Every release section starts with what it needs: *nothing*, *rebuild templates*, *rotate
 DCs / MGMT*, or *site.yaml change*. Details and reasons: [docs/decisions.md](docs/decisions.md).
 
+## LAB-261123-00 (compatibility 1.6): REPL-001 reads each link's own state
+
+Needs: nothing (`git pull`). Existing DCs get the new check at their next rotation.
+
+Fixed:
+- `REPL-001` (no replication failures) reads each inbound link's failure count from
+  `repadmin /showrepl /csv`, for every naming context, the DNS application partitions
+  included. It used `Get-ADReplicationFailure`, which reads the KCC's in-memory failure
+  cache. A successful replication doesn't clear that cache, so a DC rolled back to a
+  snapshot that includes RAM (as CERT takes them) kept failing `REPL-001`, and CERT's
+  pre-flight refused to start, for a failure from before the snapshot. Restarting
+  Active Directory Domain Services on the DC clears the old cache.
+
 ## LAB-261122-00 (compatibility 1.6): ignore password notes
 
 Needs: nothing (`git pull`).
