@@ -144,8 +144,8 @@ after the domain join), then delete the file as the script says (`shred -u ...`)
 
 1. **Get the repo onto {{mgmt00.name}}**, with your filled-in `inventory/site.yaml` in it, in a
    folder of your choice; this guide uses `C:\Users\{{mgmt00.local_user}}\Downloads\midcoast-labs`.
-   Any way works: Taildrop, a share, a USB drive, or download the zip from GitHub and
-   extract it. (You don't need a git remote of your own; step 5.3 makes the copy a git
+   Any way works: Taildrop, a share, a USB drive, or download the latest release's zip from
+   GitHub and extract it. (You don't need a git remote of your own; step 5.3 makes the copy a git
    repository.)
 2. **Install the toolchain.** Open an **elevated Windows PowerShell** (Start, type
    `powershell`, "Run as administrator"), go to that folder, and run:

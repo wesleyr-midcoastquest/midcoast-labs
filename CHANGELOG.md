@@ -18,6 +18,14 @@ Two numbers, in `inventory/lab.yaml`:
 Every release section starts with what it needs: *nothing*, *rebuild templates*, *rotate
 DCs / MGMT*, or *site.yaml change*. Details and reasons: [docs/decisions.md](docs/decisions.md).
 
+## LAB-261123-01 (compatibility 1.6): get a release
+
+Needs: nothing.
+
+Docs: the README and the runbook point to the latest release on GitHub for a tested
+version (`master` can be ahead of it): its zip, or a clone with a branch of your own at
+the release's tag, so the ledger's commits have a branch to go on.
+
 ## LAB-261123-00 (compatibility 1.6): REPL-001 reads each link's own state
 
 Needs: nothing (`git pull`). Existing DCs get the new check at their next rotation.
