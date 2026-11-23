@@ -68,12 +68,12 @@ other values that differ per installation. You make it from `inventory/site.temp
 - **Replace each DC before 180 days**, one at a time:
   [docs/replace-dc.md](docs/replace-dc.md).
 
-**4. Update.** New releases (`LAB-<YYMMDD>-<NN>`) arrive in this repo. Each entry in
+**4. Update.** New releases (`LAB-<YYMMDD>-<NN>`) are listed under [Releases](https://github.com/wesleyr-midcoastquest/midcoast-labs/releases/latest). Each entry in
 [CHANGELOG.md](CHANGELOG.md) starts with what it needs from you: usually nothing beyond
 taking the new files, sometimes rebuilding templates or replacing machines, and only for
 a new major version a change to `site.yaml`. Take a release on the active MGMT by
 replacing everything except `inventory/site.yaml`, `inventory/instances.yaml` and your
-vault (or with `git pull`, if your copy tracks this repo); then run
+vault (or, in a clone, with `git fetch --tags` and `git merge` of the new release's tag); then run
 `Test-LabInventory.ps1`, which says if anything new is needed, and regenerate the site kit
 if you'll need the runbook again. `lab.yaml` shows the release you're on (`release`) and
 its compatibility number (`version`). Don't change `lab.yaml` or anything else outside
@@ -245,10 +245,19 @@ PowerShell 7). At the end you have your site kit, and the runbook takes it from 
 **1. Check the requirements** above: Proxmox, storage, a router on the lab bridge, a /24
 of its own, a domain in your Microsoft 365 tenant, the three ISOs.
 
-**2. Get the repo**, either way:
-- **Clone it**, if you have Git: `https://github.com/wesleyr-midcoastquest/midcoast-labs.git`.
-  You can take later releases with `git pull`.
-- **Download it** from GitHub: **Code → Download ZIP**, or a zip from **Releases**.
+**2. Get the repo.** For a tested version, use the **latest release**: it's at the top of
+[Releases](https://github.com/wesleyr-midcoastquest/midcoast-labs/releases/latest), and each release is a tag (`LAB-<YYMMDD>-<NN>`). `master` can be ahead
+of it. Either way:
+- **Download it**: the release's **Source code (zip)**. (**Code → Download ZIP** gets
+  `master` instead.)
+- **Clone it**, if you have Git, and make a branch of your own at the release, so your
+  site's commits (the ledger) have a branch to go on:
+  ```
+  git clone https://github.com/wesleyr-midcoastquest/midcoast-labs.git
+  cd midcoast-labs
+  git switch -c my-site LAB-<YYMMDD>-<NN>
+  ```
+  Take a later release with `git fetch --tags` and `git merge LAB-<YYMMDD>-<NN>`.
 
 Your copy will soon hold your own `site.yaml`, which describes your lab: if you keep it in
 a git remote, keep that one **private**.
@@ -257,8 +266,8 @@ a git remote, keep that one **private**.
 internet", and PowerShell then refuses to run them ("… is not digitally signed").
 - **Downloaded a zip:** unblock the zip **before** extracting it, so nothing inside is marked:
   ```powershell
-  Unblock-File .\midcoast-labs-master.zip
-  Expand-Archive .\midcoast-labs-master.zip -DestinationPath C:\
+  Unblock-File .\midcoast-labs-*.zip
+  Expand-Archive .\midcoast-labs-*.zip -DestinationPath C:\
   ```
 - **Already extracted it** (or cloned it): unblock the folder, from inside it:
   ```powershell
