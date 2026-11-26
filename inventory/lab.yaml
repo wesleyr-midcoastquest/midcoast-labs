@@ -15,7 +15,7 @@
 
 version: "1.7"                                   # CHANGED: 1.6 -> 1.7 (site-neutral templates, site.yaml templates.shared_from)
                                                  # Compatibility number; changes rarely (see CHANGELOG.md).
-release: LAB-261126-00                           # ADDED: release name, LAB-<YYMMDD>-<NN>; every merged change gets a new one
+release: LAB-261126-01                           # ADDED: release name, LAB-<YYMMDD>-<NN>; every merged change gets a new one
 
 environment:
   name: MidCoast-Lab
@@ -137,7 +137,7 @@ templates:
       tpm: false
       tag: win2022
       software_versions:
-        powershell: latest                       # or pin, e.g. "7.4.6", for byte-identical rebuilds
+        powershell: latest                       # newest stable release with a win-x64 MSI; or pin one, e.g. "7.6.10", for byte-identical rebuilds
         cloudbase_init: stable                   # cloudbase.it stable channel
 
   windows_11:

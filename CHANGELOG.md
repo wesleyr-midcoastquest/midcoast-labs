@@ -18,6 +18,20 @@ Two numbers, in `inventory/lab.yaml`:
 Every release section starts with what it needs: *nothing*, *rebuild templates*, *rotate
 DCs / MGMT*, or *site.yaml change*. Details and reasons: [docs/decisions.md](docs/decisions.md).
 
+## LAB-261126-01 (compatibility 1.7): template builds pick an installable PowerShell
+
+Needs: nothing (`git pull`; the next template build uses it).
+
+Fixed:
+- **Template builds failed at "Install-LabSoftware.ps1"** with a GitHub 404 page, after
+  half an hour of updates. PowerShell 7.7.0, GitHub's latest release, has no Windows x64
+  MSI. `software_versions.powershell: latest` is now the highest stable version that has
+  one (7.6.10 today; a 7.7.x with an MSI is picked up when it appears), and a pinned
+  version without one is an error that says so. The MSI's SHA-256 is checked against the
+  digest GitHub publishes.
+- **`Build-LabTemplate.ps1` checks this before starting Packer**, and names the version
+  the template will get. If GitHub can't be reached from MGMT it warns and goes on.
+
 ## LAB-261126-00 (compatibility 1.7): share templates between labs on one node
 
 Needs: nothing for a lab that keeps building its own templates (`git pull`; its next
