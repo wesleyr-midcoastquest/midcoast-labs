@@ -13,9 +13,9 @@
 # dates, sequences and DC/MGMT slots) lives in inventory/instances.yaml, a ledger
 # the pipeline writes. Never hand-edit the ledger.
 
-version: "1.6"                                   # CHANGED: 1.5 -> 1.6 (per-site Proxmox names, snapshot privileges, CERT lock)
+version: "1.7"                                   # CHANGED: 1.6 -> 1.7 (site-neutral templates, site.yaml templates.shared_from)
                                                  # Compatibility number; changes rarely (see CHANGELOG.md).
-release: LAB-261123-01                           # ADDED: release name, LAB-<YYMMDD>-<NN>; every merged change gets a new one
+release: LAB-261126-00                           # ADDED: release name, LAB-<YYMMDD>-<NN>; every merged change gets a new one
 
 environment:
   name: MidCoast-Lab
@@ -420,6 +420,9 @@ secrets:                                         # ADDED: names in the KeePass v
     proxmox_terraform_token: MidCoast-Proxmox-terraform
     proxmox_packer_token: MidCoast-Proxmox-packer
     tailscale_authkey: MidCoast-Tailscale-AuthKey      # ADDED (1.4): only when site.yaml tailscale.enabled
+    template_administrator: MidCoast-TemplateAdministrator  # ADDED (1.7): only with site.yaml templates.shared_from:
+                                                       # the OWNER lab's local Administrator password, which its
+                                                       # templates carry; used once per clone, then replaced by ours
   # Every account in identity.* is stored under its own name
   # (<user>, <user>-a, svc-labdeploy, svc-domainjoin).
 

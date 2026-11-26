@@ -4,9 +4,13 @@
 # Gives the clone its own WinRM/HTTPS identity and lets only MGMT in: every
 # MGMT slot address, so a replacement MGMT can manage the lab too.
 # The orchestrator then pushes the platform and starts bootstrap.ps1.
-# The addresses are rendered from inventory by Packer.
+#
+# Site-neutral (1.7): Packer renders the MGMT slots' host numbers (lab.yaml),
+# not addresses. The clone puts them in the subnet of the DHCP address it got
+# on first boot, which is the lab's subnet at whichever site cloned it, so one
+# template works for every lab on the node (site.yaml templates.shared_from).
 $ErrorActionPreference = 'Stop'
-$Mgmt     = @('${mgmt_ips}'.Split(',') | Where-Object { $_ })
+$MgmtHosts = @('${mgmt_hosts}'.Split(',') | Where-Object { $_ } | ForEach-Object { [int] $_ })
 $Friendly = 'MidCoast Lab WinRM (self-signed)'
 $LogDir   = 'C:\ProgramData\MidCoastLab\Logs\Bootstrap'
 New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
@@ -19,6 +23,32 @@ try {
         Write-Host 'Remoting already initialized.'
         return
     }
+
+    # The lab subnet: from the first DHCP address (not APIPA). Cloudbase-Init can
+    # run before the lease arrives, so wait for it; without one the orchestrator
+    # can't reach this clone anyway.
+    $lease = $null
+    $until = (Get-Date).AddMinutes(10)
+    while (-not $lease -and (Get-Date) -lt $until) {
+        $lease = @(Get-NetIPAddress -AddressFamily IPv4 -PrefixOrigin Dhcp -ErrorAction SilentlyContinue |
+            Where-Object { $_.IPAddress -notlike '169.254.*' })[0]
+        if (-not $lease) { Start-Sleep -Seconds 5 }
+    }
+    if (-not $lease) { throw 'No DHCP address after 10 minutes; cannot tell which subnet MGMT is on.' }
+    $bytes = ([System.Net.IPAddress]::Parse($lease.IPAddress)).GetAddressBytes()
+    [array]::Reverse($bytes)
+    $ip    = [BitConverter]::ToUInt32($bytes, 0)
+    $bits  = [int] $lease.PrefixLength
+    $mask  = [uint32] (([uint64] 1 -shl 32) - ([uint64] 1 -shl (32 - $bits)))   # no hex: 0xFFFFFFFF is -1 in PowerShell
+    $net   = $ip -band $mask
+    $size  = [uint64] 1 -shl (32 - $bits)
+    $Mgmt  = @(foreach ($h in $MgmtHosts) {
+        if ($h -le 0 -or $h -ge ($size - 1)) { throw "MGMT host number $h doesn't fit the /$bits subnet of $($lease.IPAddress)." }
+        $b = [BitConverter]::GetBytes([uint32] ($net + $h))
+        [array]::Reverse($b)
+        ([System.Net.IPAddress]::new($b)).ToString()
+    })
+    Write-Host "DHCP address $($lease.IPAddress)/$bits; MGMT slots: $($Mgmt -join ', ')"
 
     # Windows client SKUs disable the built-in Administrator after sysprep;
     # the orchestrator's first connection uses it.

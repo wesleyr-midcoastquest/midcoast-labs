@@ -47,6 +47,13 @@ Start-Transcript -Path $runLog | Out-Null
 trap { try { Stop-Transcript | Out-Null } catch { }; break }
 $repo = Get-LabRepoRoot
 
+# A site that borrows its templates doesn't build any: say so before the pre-flight,
+# which would fail on the missing borrowed templates instead.
+$from = (Get-LabResolvedInventory -NoExport).proxmox.templates_from
+if ($null -ne $from) {
+    throw "This site takes its templates from the lab at vmid_base $from (site.yaml templates.shared_from); build them there, with that lab's Build-LabTemplate.ps1."
+}
+
 # ── Pre-flight: inventory, then the live site ─────────────────────────────
 $findings = & (Join-Path $PSScriptRoot 'Test-LabInventory.ps1') -PassThru
 if (@($findings | Where-Object Level -eq 'Error').Count -gt 0) { throw 'Inventory validation failed.' }
@@ -137,8 +144,12 @@ try {
     Wait-LabPveTask -Inventory $inv -Token $token -Upid $upid
     Wait-LabPveTask -Inventory $inv -Token $token -Upid (Invoke-LabPveApi -Inventory $inv -Token $token -Method POST -Path "/nodes/$node/qemu/$final/template")
 
-    $desc = "$($tpl.operating_system) golden image $($version.name). Built $(Get-Date -Format 'yyyy-MM-dd HH:mm') from platform $(Get-LabPlatformVersion). Managed by Build-LabTemplate.ps1; deleted automatically once superseded and unused."
-    $null = Invoke-LabPveApi -Inventory $inv -Token $token -Method PUT -Path "/nodes/$node/qemu/$final/config" -Body @{ description = $desc; tags = "$($inv.proxmox.tag);template;$($tpl.build.tag)" }
+    # No NIC on the template: Proxmox checks SDN.Use on the SOURCE's bridges when cloning,
+    # so a NIC on this lab's bridge would stop other labs from cloning it (and granting
+    # them this bridge would let them onto this lab's network). Terraform gives every
+    # clone its NIC on its own lab's bridge (network_device), as it always has.
+    $desc = "$($tpl.operating_system) golden image $($version.name). Built $(Get-Date -Format 'yyyy-MM-dd HH:mm') from platform $(Get-LabPlatformVersion). Managed by Build-LabTemplate.ps1 of the lab at vmid_base $($inv.proxmox.vmid_base); deleted automatically once superseded and unused. Site-neutral: other labs on this node may borrow it (templates.shared_from)."
+    $null = Invoke-LabPveApi -Inventory $inv -Token $token -Method PUT -Path "/nodes/$node/qemu/$final/config" -Body @{ description = $desc; tags = "$($inv.proxmox.tag);template;$($tpl.build.tag);$(Get-LabNeutralTag)"; delete = 'net0' }
 
     # Record it: the new version is current, the previous one superseded.
     # Re-read first: the build took an hour, and the ledger may have changed.

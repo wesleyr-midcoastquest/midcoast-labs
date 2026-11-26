@@ -88,3 +88,11 @@ isos:                               # file names on the iso_repository storage
   windows_server_2022: local:iso/Server2022_Eval_x64.iso
   windows_11: local:iso/Win11_Enterprise_Eval_x64.iso
   virtio: local:iso/virtio-win.iso
+
+# Optional (1.7): clone another lab's templates instead of building your own. Only a lab
+# on the same node, whose templates are site-neutral (built with 1.7 or later);
+# proxmox-setup.sh check lists them. Use that lab's template storage as yours, and keep
+# its local Administrator password in your vault (runbook step 6). Leave out to build.
+# templates:
+#   shared_from:
+#     vmid_base: 3000               # the owner lab's proxmox.vmid_base

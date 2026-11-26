@@ -147,6 +147,9 @@ foreach ($a in @($inv.identity.administrative_model.administrators)) {
 }
 $prompted = @($e.proxmox_terraform_token, $e.proxmox_packer_token)
 if ($inv.tailscale.enabled) { $prompted += $e.tailscale_authkey }
+# Borrowed templates (site.yaml templates.shared_from) carry the owner lab's local
+# Administrator password; this site needs it once per clone (1.7).
+if ($null -ne $inv.proxmox.templates_from) { $prompted += $e.template_administrator }
 
 $existing = @(Get-SecretInfo -Vault $vault | ForEach-Object Name)
 foreach ($name in $prompted) {
@@ -154,6 +157,10 @@ foreach ($name in $prompted) {
     if ($name -eq $e.tailscale_authkey) {
         Write-Host "  Tailscale auth key: make it REUSABLE, tagged (e.g. tag:midcoast-lab) and NOT ephemeral (leave 'Ephemeral' off)." -ForegroundColor Yellow
         Write-Host "  It goes to every lab machine; an ephemeral device drops off the tailnet when it's offline and can't rejoin." -ForegroundColor Yellow
+    }
+    if ($name -eq $e.template_administrator) {
+        Write-Host "  This site borrows the templates of the lab at vmid_base $($inv.proxmox.templates_from). Paste THAT lab's local Administrator" -ForegroundColor Yellow
+        Write-Host "  password (its vault: $($e.local_administrator)). Each clone gets this site's own password on first connection." -ForegroundColor Yellow
     }
     $v = Read-Host "Paste the secret for $name" -AsSecureString
     Set-Secret -Vault $vault -Name $name -SecureStringSecret $v
