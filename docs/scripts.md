@@ -802,5 +802,7 @@ Packer provisioner: installs PowerShell 7 and Cloudbase-Init into the template.
 
 Versions come from inventory (templates.<key>.build.software_versions) through
 the environment variables LAB_PWSH_VERSION and LAB_CBI_CHANNEL, which
-windows.pkr.hcl sets. Cloudbase-Init is installed but left stopped: it runs
+windows.pkr.hcl sets. PowerShell "latest" is the newest stable release with a
+Windows x64 MSI (not every release has one); the MSI's SHA-256 is checked
+against the digest GitHub publishes. Cloudbase-Init is installed but left stopped: it runs
 on clones, not during the build.

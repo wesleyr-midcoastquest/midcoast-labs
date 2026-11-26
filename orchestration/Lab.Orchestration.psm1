@@ -209,6 +209,46 @@ function New-LabTemplateVersion {
     }
 }
 
+function Get-LabPwshMsiRelease {
+    # The PowerShell 7 release a template build installs (Install-LabSoftware.ps1 makes
+    # the same choice inside the build VM): "latest" or empty is the highest stable
+    # version with a win-x64 MSI, since not every release has one (7.7.0 didn't); a
+    # pinned version must have one. Throws when there's no installable release; returns
+    # Unreachable (the error) when GitHub can't be asked, so the caller can go on.
+    [CmdletBinding()]
+    param(
+        [AllowEmptyString()] [string] $Version,
+        # Fetches a GitHub API URL; replaced in tests.
+        [scriptblock] $Get = { param($Uri) Invoke-RestMethod -Uri $Uri -Headers @{ 'User-Agent' = 'MidCoastLab'; Accept = 'application/vnd.github+json' } }
+    )
+    $api = 'https://api.github.com/repos/PowerShell/PowerShell/releases'
+    $msi = { param($r) $v = $r.tag_name.TrimStart('v'); @($r.assets | Where-Object name -eq "PowerShell-$v-win-x64.msi")[0] }
+    $result = { param($r, $skipped) [pscustomobject]@{ Version = $r.tag_name.TrimStart('v'); Asset = (& $msi $r); Skipped = @($skipped); Unreachable = $null } }
+    if (-not $Version -or $Version -eq 'latest') {
+        # Assigned before piping: Invoke-RestMethod writes a JSON array as one object.
+        try { $all = & $Get "$api`?per_page=50" } catch { return [pscustomobject]@{ Version = $null; Asset = $null; Skipped = @(); Unreachable = $_.Exception.Message } }
+        $stable = @($all | Where-Object { -not $_.draft -and -not $_.prerelease -and ($_.tag_name.TrimStart('v') -as [version]) } |
+            Sort-Object { [version] $_.tag_name.TrimStart('v') } -Descending)
+        $skipped = [System.Collections.Generic.List[string]]::new()
+        foreach ($r in $stable) {
+            if (& $msi $r) { return (& $result $r $skipped) }
+            $skipped.Add($r.tag_name)
+        }
+        throw 'No stable PowerShell release in the last 50 has a win-x64 MSI on GitHub; the template build would fail.'
+    }
+    try { $r = & $Get "$api/tags/v$Version" }
+    catch {
+        if ($_.Exception.Response -and [int] $_.Exception.Response.StatusCode -eq 404) {
+            throw "PowerShell $Version isn't a release on GitHub (templates.<key>.build.software_versions.powershell in lab.yaml)."
+        }
+        return [pscustomobject]@{ Version = $null; Asset = $null; Skipped = @(); Unreachable = $_.Exception.Message }
+    }
+    if (-not (& $msi $r)) {
+        throw "PowerShell $Version has no win-x64 MSI on GitHub; pin a version that has one (templates.<key>.build.software_versions.powershell in lab.yaml), or use latest."
+    }
+    & $result $r @()
+}
+
 function Remove-LabUnusedTemplates {
     # Deletes superseded template versions that no instance in the ledger was
     # cloned from, and drops them from the ledger. Proxmox itself refuses to
@@ -1372,7 +1412,7 @@ function Write-LabReport {
 
 Export-ModuleMember -Function Get-LabRepoRoot, Get-LabInventoryPath, Get-LabSitePath, Get-LabResolvedPath,
     Get-LabResolvedInventory, Export-LabResolvedInventory, Get-LabLedgerPath, Get-LabPlatformVersion, Get-LabRelease,
-    Save-LabLedger, Get-LabCurrentTemplate, New-LabTemplateVersion, Remove-LabUnusedTemplates,
+    Save-LabLedger, Get-LabCurrentTemplate, New-LabTemplateVersion, Get-LabPwshMsiRelease, Remove-LabUnusedTemplates,
     Get-LabNeutralTag, Get-LabSharedTemplate, Get-LabTemplateHint, Get-LabTemplateCredentials,
     New-LabInstance, Set-LabInstanceState, Unlock-LabVault, Get-LabSecretText, Get-LabSecretCredential, Get-LabGitIdentity, Set-LabGitIdentity,
     Invoke-LabPveApi, Wait-LabPveTask, Test-LabPveVm, Invoke-LabTerraform, Connect-LabGuest, Wait-LabGuest,

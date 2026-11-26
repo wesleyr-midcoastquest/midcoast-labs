@@ -70,6 +70,17 @@ $tpl = $inv.templates.$Template
 if (-not $tpl.build) { throw "templates.$Template has no build section in lab.yaml." }
 $node  = $inv.proxmox.node
 $stage = [int] $tpl.build.staging_vmid
+
+# The PowerShell 7 installer the build will download (Install-LabSoftware.ps1 makes the
+# same choice): check it exists now, not half an hour in, after the update passes.
+$pwshWant = [string] $tpl.build.software_versions.powershell
+$pwshRel  = Get-LabPwshMsiRelease -Version $pwshWant
+if ($pwshRel.Unreachable) {
+    Write-Warning "Couldn't ask GitHub which PowerShell release to install ($($pwshRel.Unreachable)); the build will try again."
+} else {
+    $pwshRel.Skipped | ForEach-Object { Write-Host "PowerShell $_ has no win-x64 MSI; skipping it." }
+    Write-Host "PowerShell for the template: $($pwshRel.Version)$(if ($pwshWant -in '', 'latest') { ' (latest with an MSI)' })"
+}
 $token = Get-LabPveToken -Inventory $inv -Purpose packer
 
 # Free the range first: delete versions no VM uses any more.
