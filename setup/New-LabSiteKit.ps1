@@ -171,6 +171,11 @@ $values = [ordered]@{
     LAB_SUBNET         = $inv.network.subnet
     RDP_FROM           = (@($inv.network.remote_desktop_from | Where-Object { $_ }) -join ' ')
     TAILSCALE_ENABLED  = $(if ($inv.tailscale.enabled) { '1' } else { '0' })   # MGMT-00 may join with a one-time key
+    # Templates (1.7): this site's base, the lab it borrows templates from (empty: it
+    # builds its own), and each family's offsets, e.g. WIN2022-TEMPLATE=100-123.
+    VMID_BASE          = [string] $inv.proxmox.vmid_base
+    SHARED_FROM        = $(if ($null -ne $inv.proxmox.templates_from) { [string] $inv.proxmox.templates_from } else { '' })
+    TEMPLATE_FAMILIES  = (@($inv.templates.PSObject.Properties | ForEach-Object { "$($_.Value.template_name)=$($_.Value.vmid_offsets.first)-$($_.Value.vmid_offsets.last)" }) -join ' ')
     VAULT_NAME       = $inv.secrets.vault
     TOKEN_SECRET_NAMES = "$($inv.secrets.entries.proxmox_terraform_token) (terraform token), $($inv.secrets.entries.proxmox_packer_token) (packer token)"
 }

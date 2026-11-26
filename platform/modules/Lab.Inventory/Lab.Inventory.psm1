@@ -120,7 +120,21 @@ function Resolve-LabInventory {
     if ($Site.proxmox.clone_mode) { Set-LabValue $r 'proxmox.clone_mode' ([string] $Site.proxmox.clone_mode).ToLowerInvariant() }
     elseif (-not $r.proxmox.clone_mode) { Set-LabValue $r 'proxmox.clone_mode' 'linked' }
 
+    # Borrowed templates (1.7, site.yaml templates.shared_from): this site clones
+    # another lab's templates instead of building its own. Its own template range
+    # stays reserved (vmid_first/last, unchanged); shared_vmid_first/last are the
+    # owner's range, where the current version is the newest site-neutral one.
+    $from = $null
+    if ($Site.templates -and $Site.templates.shared_from -and "$($Site.templates.shared_from.vmid_base)" -match '^\d+$') {
+        $from = [int] $Site.templates.shared_from.vmid_base
+    }
+    Set-LabValue $r 'proxmox.templates_from' $from
+
     foreach ($t in $r.templates.PSObject.Properties) {
+        if ($null -ne $from) {
+            $t.Value | Add-Member -NotePropertyName shared_vmid_first -NotePropertyValue ($from + [int] $t.Value.vmid_offsets.first) -Force
+            $t.Value | Add-Member -NotePropertyName shared_vmid_last  -NotePropertyValue ($from + [int] $t.Value.vmid_offsets.last) -Force
+        }
         # Versioned templates: each build takes the next free VMID in the range.
         $t.Value | Add-Member -NotePropertyName vmid_first -NotePropertyValue ($base + [int] $t.Value.vmid_offsets.first) -Force
         $t.Value | Add-Member -NotePropertyName vmid_last  -NotePropertyValue ($base + [int] $t.Value.vmid_offsets.last) -Force

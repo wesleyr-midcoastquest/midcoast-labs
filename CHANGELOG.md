@@ -18,6 +18,41 @@ Two numbers, in `inventory/lab.yaml`:
 Every release section starts with what it needs: *nothing*, *rebuild templates*, *rotate
 DCs / MGMT*, or *site.yaml change*. Details and reasons: [docs/decisions.md](docs/decisions.md).
 
+## LAB-261126-00 (compatibility 1.7): share templates between labs on one node
+
+Needs: nothing for a lab that keeps building its own templates (`git pull`; its next
+monthly template build is site-neutral). To lend templates to another lab, the owner
+rebuilds both once with this release. To borrow, a new site sets
+`templates.shared_from` (issue #25).
+
+Added:
+- **Site-neutral templates.** The template no longer carries its lab's MGMT addresses:
+  it carries the MGMT slots' host numbers, and each clone puts them in the subnet of the
+  DHCP address it gets on first boot. Versions built from this release are tagged
+  `site-neutral` and say which lab built them. Requirement: the lab bridge's DHCP scope is
+  inside the lab subnet. New versions have no NIC (Proxmox checks the source's bridge when
+  cloning); Terraform adds each clone's NIC on its own lab's bridge, as before.
+- **`site.yaml templates.shared_from.vmid_base`** (optional): clone another lab's
+  templates instead of building your own. The current version per family is the owner's
+  newest site-neutral one on the node. `proxmox-setup.sh` grants clone and read rights on
+  the owner's template VMIDs (role `MidCoastTemplateUser`), and takes back grants outside
+  the current range; borrowed pins record `template_owner`, so a site can stop borrowing
+  or switch owners and rotate its machines over; `Build-LabTemplate.ps1`
+  refuses on a borrowing site; the vault keeps the owner's local Administrator password
+  (`MidCoast-TemplateAdministrator`, asked for by `Initialize-LabVault.ps1`), and each new
+  machine gets this site's own password on first connection.
+- **Templates are checked before a new lab is deployed.** `proxmox-setup.sh check`
+  requires a borrowing site's templates to exist (site-neutral, on its template
+  storage), and on a building site lists other labs' site-neutral templates on the node
+  with the `shared_from` line that would use them. `Test-LabSite.ps1` does the same with
+  the lab's token: errors when borrowed templates are missing or out of reach, a warning
+  when a building site has none yet.
+- **Owners keep templates other labs use.** `proxmox-teardown.sh` keeps templates that
+  another lab's VMs are linked clones of, with the pool holding them, and lists the VMs;
+  `Remove-LabUnusedTemplates` says another lab may be why a version can't be deleted.
+
+Not included: issue #25's template-only "factory" site (part C).
+
 ## LAB-261123-01 (compatibility 1.6): get a release
 
 Needs: nothing.

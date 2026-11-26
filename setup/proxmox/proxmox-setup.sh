@@ -16,9 +16,13 @@
 #   - every lab VMID is free, or already this lab's (carrying the lab's tag), and the
 #     pool and user aren't another site's
 #   - the ISOs are uploaded (Windows 11 + VirtIO are required for MGMT-00)
+#   - templates (1.7): a site that borrows them (site.yaml templates.shared_from) needs
+#     the owner's site-neutral versions on this node, on its template storage; a site
+#     that builds its own is told when another lab here already has some it could use
 # Setup:
 #   - pool, least-privilege role, terraform-prov@pve user, API tokens
-#     (secrets printed ONCE: put them in KeePass), ACLs
+#     (secrets printed ONCE: put them in KeePass), ACLs; when borrowing templates,
+#     clone and read rights on the owner's template VMIDs (role MidCoastTemplateUser)
 #   - the MGMT-00 VM, unless it exists or CREATE_MGMT00=0, with an answer CD that
 #     installs Windows 11 unattended: disk, VirtIO drivers, a local admin account,
 #     no first-run screens, then guest tools, static address, time zone, name and
@@ -44,6 +48,7 @@ set -euo pipefail
 
 : "${SITE_NAME:?This is the template copy. Generate the site kit with ./setup/New-LabSiteKit.ps1 and run out/site-kit/<site>/proxmox-setup.sh instead.}"
 for v in NODE POOL USER_ID ROLE TAG TOKENS TEMPLATE_STORAGE VM_STORAGE ISO_STORAGE BRIDGE CLONE_MODE LAB_VMIDS ISO_FILES \
+         VMID_BASE TEMPLATE_FAMILIES \
          MGMT00_VMID MGMT00_NAME MGMT00_CORES MGMT00_MEMORY MGMT00_DISK_GB MGMT00_ISO VIRTIO_ISO \
          MGMT00_IP MGMT00_PREFIX MGMT00_GATEWAY MGMT00_DNS MGMT00_TIME_ZONE MGMT00_IMAGE_INDEX MGMT00_DRIVER_OS \
          MGMT00_LOCAL_USER LAB_SUBNET TAILSCALE_ENABLED \
@@ -174,6 +179,76 @@ for f in $ISO_FILES; do
   fi
 done
 
+# Templates (1.7). Only versions tagged site-neutral can serve another lab: older
+# ones trust their own lab's MGMT addresses. Root sees every lab's VMs; the lab's
+# token sees only its own, which is why this check lives here.
+TEMPLATE_REPORT="$(NODE="$NODE" VMID_BASE="$VMID_BASE" SHARED_FROM="${SHARED_FROM:-}" FAMILIES="$TEMPLATE_FAMILIES" \
+  TEMPLATE_STORAGE="$TEMPLATE_STORAGE" CLONE_MODE="$CLONE_MODE" python3 - <<'PY'
+import json, os, re, subprocess
+node, base, shared = os.environ["NODE"], int(os.environ["VMID_BASE"]), os.environ["SHARED_FROM"]
+fams = {}
+for item in os.environ["FAMILIES"].split():
+    name, rng = item.split("=", 1)
+    first, last = (int(x) for x in rng.split("-"))
+    fams[name] = (first, last)
+vms = json.loads(subprocess.run(["pvesh", "get", "/cluster/resources", "--type", "vm", "--output-format", "json"],
+                                capture_output=True, text=True, check=True).stdout)
+def tags(v): return [t for t in re.split(r"[;,\s]+", str(v.get("tags", ""))) if t]
+def config(vid):
+    r = subprocess.run(["pvesh", "get", f"/nodes/{node}/qemu/{vid}/config", "--output-format", "json"], capture_output=True, text=True)
+    return json.loads(r.stdout) if r.returncode == 0 else {}
+neutral = [v for v in vms if int(v.get("template", 0)) == 1 and v.get("node") == node
+           and "template" in tags(v) and "site-neutral" in tags(v)]
+def family_of(v):
+    for f in fams:
+        if re.fullmatch(re.escape(f) + r"-\d{6}-\d{2}", v.get("name", "")): return f
+out = []
+if shared:
+    sb = int(shared)
+    for f, (first, last) in fams.items():
+        mine = sorted((v for v in neutral if family_of(v) == f and sb + first <= int(v["vmid"]) <= sb + last),
+                      key=lambda v: v["name"], reverse=True)
+        if not mine:
+            out.append(f"ERROR|no site-neutral {f} in VMIDs {sb + first}-{sb + last} on {node} (the lab at vmid_base {sb}, "
+                       f"templates.shared_from). Build one there with 1.7 or later; older versions only work for their own lab.")
+            continue
+        cur = mine[0]
+        out.append(f"OK|{f}: borrowing {cur['name']} (VMID {cur['vmid']}, pool {cur.get('pool', '-')})")
+        store = str(config(cur["vmid"]).get("scsi0", "")).split(":")[0]
+        if os.environ["CLONE_MODE"] == "linked" and store and store != os.environ["TEMPLATE_STORAGE"]:
+            out.append(f"ERROR|{cur['name']} is on storage '{store}', and linked clones live on their template's storage: "
+                       f"set proxmox.storage.templates to '{store}' in site.yaml (or clone_mode: full) and regenerate the kit.")
+else:
+    labs = {}
+    for v in neutral:
+        f = family_of(v)
+        vid = int(v["vmid"])
+        if not f or base <= vid <= base + 149: continue
+        m = re.search(r"vmid_base (\d+)", str(config(vid).get("description", "")))
+        owner = int(m.group(1)) if m else None
+        labs.setdefault(owner, {}).setdefault(f, []).append(v)
+    for owner, byfam in sorted(labs.items(), key=lambda kv: (kv[0] is None, kv[0] or 0)):
+        names = ", ".join(sorted(v["name"] for vs in byfam.values() for v in vs))
+        pools = ", ".join(sorted({str(v.get("pool", "-")) for vs in byfam.values() for v in vs}))
+        complete = all(f in byfam for f in fams)
+        if owner is None:
+            out.append(f"INFO|site-neutral templates already on {node} (pool {pools}): {names}.")
+        else:
+            out.append(f"INFO|the lab at vmid_base {owner} (pool {pools}) already has site-neutral templates on {node}: {names}." +
+                       (f" This site could borrow them instead of building its own: in site.yaml set "
+                        f"'templates: {{ shared_from: {{ vmid_base: {owner} }} }}', regenerate the kit and run this again."
+                        if complete else " Not every family, so this site still builds its own."))
+print("\n".join(out))
+PY
+)" || { fail "couldn't list the cluster's templates (pvesh)."; TEMPLATE_REPORT=""; }
+while IFS='|' read -r level msg; do
+  case "$level" in
+    ERROR) fail "$msg" ;;
+    OK)    echo "  $msg" ;;
+    INFO)  echo "  note: $msg" ;;
+  esac
+done <<< "$TEMPLATE_REPORT"
+
 if [[ "$CREATE_MGMT00" == "1" && "$MGMT00_EXISTS" == "0" ]] && ! command -v genisoimage >/dev/null 2>&1; then
   warn "genisoimage isn't installed; setup installs it (apt-get) to build MGMT-00's answer CD."
 fi
@@ -230,6 +305,44 @@ for s in $(printf '%s\n' "$TEMPLATE_STORAGE" "$VM_STORAGE" "$ISO_STORAGE" | sort
 done
 pveum acl modify "/sdn/zones/localnetwork/$BRIDGE" --users "$USER_ID" --roles "$ROLE"
 pveum acl modify "/nodes/$NODE"                    --users "$USER_ID" --roles PVEAuditor
+if [[ -n "${SHARED_FROM:-}" ]]; then
+  # Borrowed templates (1.7): clone and read the owner's template VMIDs, nothing else.
+  # ACLs on /vms/<id> can exist before the VM does, so later versions are covered.
+  # The owner's own setup isn't involved; removing this site's user removes these.
+  TROLE="MidCoastTemplateUser"
+  if pveum role list --output-format json | python3 -c "import json,sys; sys.exit(0 if any(r['roleid']=='$TROLE' for r in json.load(sys.stdin)) else 1)"; then
+    pveum role modify "$TROLE" --privs "VM.Audit,VM.Clone"
+  else
+    pveum role add "$TROLE" --privs "VM.Audit,VM.Clone"
+  fi
+  n=0
+  for item in $TEMPLATE_FAMILIES; do
+    rng="${item#*=}"
+    for ((id = SHARED_FROM + ${rng%-*}; id <= SHARED_FROM + ${rng#*-}; id++)); do
+      pveum acl modify "/vms/$id" --users "$USER_ID" --roles "$TROLE"; n=$((n + 1))
+    done
+  done
+  echo "  $TROLE on $n template VMIDs of the lab at vmid_base $SHARED_FROM"
+fi
+# Take back template grants outside the current range: after shared_from changes or is
+# removed, an old grant would keep this site's clone rights on whatever lab takes that
+# VMID block next.
+WANT_TPL_IDS=""
+if [[ -n "${SHARED_FROM:-}" ]]; then
+  for item in $TEMPLATE_FAMILIES; do rng="${item#*=}"
+    for ((id = SHARED_FROM + ${rng%-*}; id <= SHARED_FROM + ${rng#*-}; id++)); do WANT_TPL_IDS="$WANT_TPL_IDS $id"; done
+  done
+fi
+STALE="$(pveum acl list --output-format json | WANT="$WANT_TPL_IDS" USER_ID="$USER_ID" python3 -c '
+import json, os, sys
+want = set(os.environ["WANT"].split())
+for a in json.load(sys.stdin):
+    p = a.get("path", "")
+    if a.get("ugid") == os.environ["USER_ID"] and a.get("roleid") == "MidCoastTemplateUser" and p.startswith("/vms/") and p[5:] not in want:
+        print(p)
+')"
+for p in $STALE; do pveum acl delete "$p" --users "$USER_ID" --roles MidCoastTemplateUser; done
+[[ -n "$STALE" ]] && echo "  removed $(wc -w <<< "$STALE") template grant(s) outside the current range"
 
 echo "==> API tokens"
 for t in $TOKENS; do

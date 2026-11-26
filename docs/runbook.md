@@ -195,6 +195,11 @@ after the domain join), then delete the file as the script says (`shred -u ...`)
    `-GeneratePasswords` skips that question. **Back up the `.kdbx` and its master
    password outside the lab**: without them the lab's secrets are gone.
 
+   A site that borrows another lab's templates (`site.yaml templates.shared_from`) is also
+   asked for **that lab's local Administrator password** (its vault entry
+   `MidCoast-LocalAdministrator`), stored as `MidCoast-TemplateAdministrator`: its
+   templates carry it, and the pipeline replaces it with yours on each new machine.
+
    The Tailscale key for the vault is the one every lab machine uses: make it in the admin
    console (Settings, Keys) **reusable**, **tagged** (e.g. `tag:midcoast-lab`) and **not
    ephemeral** (leave *Ephemeral* off). An ephemeral device is removed from the tailnet
@@ -228,6 +233,12 @@ git add inventory/instances.yaml; git commit -m "Templates"
 ./orchestration/Invoke-LabPhase.ps1 -Phase 1 # two DCs, about an hour
 git add inventory/instances.yaml; git commit -m "Phase 1"
 ```
+
+**Borrowing templates** (`site.yaml templates.shared_from`): skip the two
+`Build-LabTemplate.ps1` lines and the "Templates" commit. `Test-LabSite.ps1` shows which
+of the owner lab's versions this site will clone, and fails if one is missing; new
+versions come from the owner's monthly builds, and your machines pick them up at their
+next rotation.
 
 Both templates now: neither needs the domain, and step 9 needs the Windows 11 one. Build
 them one after the other (they share the build slot), not at the same time. `-Template`
@@ -329,7 +340,9 @@ bash proxmox-teardown.sh --vmid-base {{proxmox.vmid_base}} --pool {{proxmox.pool
 
 It removes only the lab's own VMs in VMIDs `{{proxmox.vmid_base}}`–`{{proxmox.vmid_last}}`
 (anything else there is listed and left alone), with the lab's Proxmox pool, user and
-role. It keeps your ISOs, and backups unless you add `--include-backups`. Remove the lab's
+role. It keeps your ISOs, and backups unless you add `--include-backups`. It also keeps
+any template that another lab's machines are linked clones of (that lab borrows this
+one's templates), with the pool holding it, and lists who uses it. Remove the lab's
 machines in the Tailscale admin console too, then begin again at step 3 (the router and
 the ISOs are still there).
 

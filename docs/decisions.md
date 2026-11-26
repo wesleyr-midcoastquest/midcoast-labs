@@ -550,16 +550,85 @@ names as defaults and accepts `--pool --user --role --tag`; the site kit's `RUNB
 ("Starting over") prints the full command for the site, so it can never remove another
 site's pool by default.
 
+## Shared templates (1.7)
+
+Several labs on one node each built their own Server 2022 and Windows 11 templates: an
+hour and 15–25 GB each, rebuilt monthly, for the same image (issue #25). Two things tied a
+template to its lab, and 1.7 removes both.
+
+**Templates are site-neutral.** At build time the WinRM/ping firewall rule trusted the
+building lab's two MGMT *addresses*, so a clone at another lab refused its own MGMT. The
+template now carries the MGMT slots' *host numbers* (`servers[MGMT].slots[*].host`, product
+constants), and `Initialize-LabRemoting.ps1` puts them in the subnet of the DHCP address
+the clone gets on first boot: the lab's own /24, wherever it was cloned. `MGMT-005` checks
+the resulting rule, not how it was made, so it is unchanged. Versions built this way are
+tagged `site-neutral`; only those can serve another lab.
+
+**Templates have no NIC.** Proxmox checks `SDN.Use` on the *source* VM's bridges when it
+clones (checked in PVE 9.2's `clone_vm`), so a template on the owner's bridge could only be
+cloned by a lab allowed onto the owner's network. `Build-LabTemplate.ps1` removes `net0`
+from each new version instead; Terraform gives every clone its NIC on its own lab's bridge
+(`network_device`), as it always did. Requirement this adds: the lab
+bridge's DHCP scope is inside the lab subnet (it always was in practice: `Test-LabSite`'s
+advice is to exclude the static range from it).
+
+**The local Administrator password stays the owner's until first contact.** The issue
+thought everything else in a template was already neutral, but the template also carries
+its builder's local Administrator password (`unattend-midcoast.xml`), and the orchestrator's
+first connection uses the site's own. A borrowing site keeps the owner's password in its
+vault (`MidCoast-TemplateAdministrator`, asked for by `Initialize-LabVault.ps1`);
+`Deploy-LabInstance` tries it after the site's own and, on a fresh clone, sets the site's
+password before pushing anything. So every machine ends up with its own lab's password,
+the owner's is used once per clone, and nothing new goes in Proxmox (a password on the
+config drive would sit in the VM's configuration, readable with `VM.Audit`).
+
+**One owner, many borrowers.** A site either builds templates (the default) or borrows
+them with `site.yaml templates.shared_from.vmid_base`, the owner's `vmid_base`:
+
+- The borrower's current version per family is the **newest site-neutral template in the
+  owner's range**, by name (`<family>-<YYMMDD>-<NN>`). The owner's ledger isn't readable
+  from another site; names are, and the owner deletes superseded versions once unused.
+- `proxmox-setup.sh` of the borrower grants its user a small role, `MidCoastTemplateUser`
+  (`VM.Audit`, `VM.Clone`), on `/vms/<id>` for each of the owner's 48 template VMIDs. ACLs
+  can exist before the VM does, so later versions are covered. The owner isn't involved.
+  Each run also removes this user's grants outside the current range, so changing or
+  dropping `shared_from` takes the old rights back (otherwise they'd carry over to
+  whichever lab took that VMID block next); removing the borrower's user removes them all.
+- Instances still pin `template_vmid` at allocation, so rotation works as before. A
+  borrowed pin also records `template_owner` (the owner's `vmid_base`), and validation
+  checks the pin against that owner's range, not against today's `site.yaml`: a site can
+  stop borrowing, or borrow from another lab, and its machines move over at rotation.
+- `Build-LabTemplate.ps1` refuses on a borrower. The borrower's own +100..+149 stay
+  reserved, so it can go back to building later.
+- Linked clones live on their template's storage, so the borrower's
+  `proxmox.storage.templates` must be the owner's (checked by both pre-flights).
+- **Owner safety.** Proxmox can't delete a template that has linked clones, so the
+  owner's `Remove-LabUnusedTemplates` keeps such versions (and says another lab may use
+  them; a borrower's machines on old versions can fill the owner's 24-ID range until the
+  borrower rotates them, and the owner's "no free VMID" error says so), and `proxmox-teardown.sh` of an owner keeps the templates other labs' VMs are
+  cloned from, with the pool that holds them, and says which VMs use them. The issue
+  suggested a `--force-templates` override; it can't work, so there isn't one. A
+  borrower's teardown only ever acts inside its own block.
+
+**A new lab is told when it could borrow.** `proxmox-setup.sh check` runs as root and sees
+every lab, so it lists other labs' site-neutral templates on the node and prints the
+`shared_from` line that would use them. `Test-LabSite.ps1` (the lab's token sees only its
+own pool) warns a building site that has no template yet and points to that check.
+
+**Not done (issue #25, part C):** a template-only "factory" site that owns the templates so
+that no lab's teardown can threaten them. Any lab can be the owner today; a factory is
+the same thing without servers, and can follow if owners turn out to churn.
+
 ## Known gaps
 
 - **Windows DHCP failover isn't in scope**, since the router serves DHCP. Make sure the
   router's pool excludes `10.50.10.10–49`.
 - **Windows 11 evaluations last 90 days**, half the DCs' 180. Plan on rotating MGMT about
   every two months; `EVAL-001` warns when fewer than 30 days remain.
-- **Templates must come from this version.** Guests trust the MGMT addresses baked in
-  at template build time; a template built before the slot pool would only trust `.30`,
-  and a replacement MGMT would fail `MGMT-005`. (Nothing has been built yet, so this only
-  matters if the inventory's MGMT slots change later: rebuild the templates, then rotate.)
+- **Templates carry the MGMT slots' host numbers** from the inventory they were built
+  with (1.7: host numbers, no longer addresses). If `servers[MGMT].slots` changes, rebuild
+  the templates, then rotate. Templates are per node unless storage is shared (Ceph RBD);
+  sharing between nodes or clusters isn't in scope.
 - **Rotation of DCs**: built in v1.4 (see 'DC rotation').
 - **MGMT-00's one-time Tailscale join has no watchdog** until step 6 switches it to the
   reusable key; a restart in between may log it out. MGMT-00 lives hours, so that's accepted.

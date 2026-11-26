@@ -22,6 +22,9 @@
 #   - with --include-backups: vzdump backups of those VMIDs
 # Never touches: a VM in the block that isn't the lab's (it's listed and skipped), any
 # other VMID, any other ISO, the storages, bridges or network.
+# Keeps (1.7): templates that another lab's VMs are linked clones of (that lab borrows
+# them, site.yaml templates.shared_from), and the pool while it holds them. Proxmox
+# can't delete a template with linked clones anyway; the plan says who uses which.
 #
 # Outside Proxmox (not done here): remove the lab's machines in the Tailscale admin
 # console, and anything you pointed at lab addresses by hand (router DNS, DHCP leases).
@@ -74,9 +77,30 @@ for v in sorted(json.loads(os.environ["VMS"]), key=lambda v: (int(v.get("templat
     print(vid, v.get("node", "?"), int(v.get("template", 0)), v.get("status", "?"), v.get("name", "?").replace(" ", "_"), ours)
 PY
 )"
-REMOVE=(); SKIP=()
+# Templates in the block that VMs outside it are linked clones of (lines: template clone_vmid clone_name clone_pool).
+BORROWED="$(FIRST=$FIRST LAST=$LAST VMS="$VMS_JSON" python3 - <<'PY'
+import json, os, re, subprocess
+first, last = int(os.environ["FIRST"]), int(os.environ["LAST"])
+vms = json.loads(os.environ["VMS"])
+for v in vms:
+    vid = int(v["vmid"])
+    if first <= vid <= last or v.get("type", "qemu") != "qemu":
+        continue
+    r = subprocess.run(["pvesh", "get", f"/nodes/{v['node']}/qemu/{vid}/config", "--output-format", "json"], capture_output=True, text=True)
+    if r.returncode != 0:
+        continue
+    for val in json.loads(r.stdout).values():
+        for t in re.findall(r"base-(\d+)-disk", str(val)):
+            if first <= int(t) <= last:
+                print(t, vid, str(v.get("name", "?")).replace(" ", "_"), v.get("pool", "-"))
+PY
+)"
+REMOVE=(); SKIP=(); KEPT=()
 while read -r vid node tpl status name ours; do
   [[ -z "${vid:-}" ]] && continue
+  if [[ "$ours" == "1" && "$tpl" == "1" ]] && awk -v t="$vid" '$1 == t { found = 1 } END { exit !found }' <<< "$BORROWED"; then
+    KEPT+=("$vid $name"); continue
+  fi
   if [[ "$ours" == "1" ]]; then REMOVE+=("$vid $node $tpl $status $name"); else SKIP+=("$vid $node $name"); fi
 done <<< "$VM_LINES"
 
@@ -126,6 +150,16 @@ if [[ ${#SKIP[@]} -gt 0 ]]; then
   echo
   echo "Skipped (in the lab's VMID block but NOT the lab's; check them yourself):"
   for s in "${SKIP[@]}"; do echo "  VM $s"; done
+fi
+if [[ ${#KEPT[@]} -gt 0 ]]; then
+  echo
+  echo "Kept: templates other labs' VMs are linked clones of (those labs borrow this lab's templates):"
+  for k in "${KEPT[@]}"; do read -r vid name <<< "$k"
+    users="$(awk -v t="$vid" '$1 == t { printf "%s%s (VMID %s, pool %s)", sep, $3, $2, $4; sep = ", " }' <<< "$BORROWED")"
+    echo "  VM $vid $name, used by $users"
+  done
+  [[ $POOL_EXISTS == 1 ]] && echo "  and the pool $POOL, which holds them"
+  echo "  They go once those VMs are rotated onto another lab's templates or removed; run this again then."
 fi
 echo
 echo "Kept: every ISO except the answer CD, the storages, the network."
@@ -179,7 +213,9 @@ done
 
 if [[ $USER_EXISTS == 1 ]]; then echo "==> User $USER_ID"; pveum user delete "$USER_ID" && echo "    removed (with its tokens and ACLs)" || FAILED=$((FAILED + 1)); fi
 if [[ $ROLE_EXISTS == 1 ]]; then echo "==> Role $ROLE"; pveum role delete "$ROLE" && echo "    removed" || FAILED=$((FAILED + 1)); fi
-if [[ $POOL_EXISTS == 1 ]]; then
+if [[ $POOL_EXISTS == 1 && ${#KEPT[@]} -gt 0 ]]; then
+  echo "==> Pool $POOL: kept, it holds the templates other labs still use"
+elif [[ $POOL_EXISTS == 1 ]]; then
   echo "==> Pool $POOL"
   if pveum pool delete "$POOL" 2>/dev/null; then echo "    removed"; else echo "    not removed (not empty? see: pvesh get /pools/$POOL)"; FAILED=$((FAILED + 1)); fi
 fi
@@ -196,7 +232,8 @@ echo "  ACL entries for $USER_ID / $ROLE: $ACL_LEFT"
 if [[ $FAILED -gt 0 ]]; then
   echo "Finished with $FAILED problem(s) above; re-run to retry (it only removes what's still there)."; exit 1
 fi
-echo "Done. Proxmox is clear of the lab; ISOs kept."
+if [[ ${#KEPT[@]} -gt 0 ]]; then echo "Done, apart from ${#KEPT[@]} template(s) other labs still use (listed above). ISOs kept."
+else echo "Done. Proxmox is clear of the lab; ISOs kept."; fi
 echo "Still to do outside Proxmox:"
 echo "  - The ledger (inventory/instances.yaml in your repo) and the Terraform state still describe"
 echo "    the lab you just removed, and the pipeline would refuse to build. On the machine that runs"

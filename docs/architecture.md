@@ -545,6 +545,10 @@ Application Configuration
 Environment-Specific Data
 ```
 
+Since 1.7 they don't contain site data either: the firewall rule that lets MGMT in is
+made on first boot from the clone's own subnet, so other labs on the same node can clone
+them (`site.yaml templates.shared_from`; see decisions.md, "Shared templates").
+
 ---
 
 ## Packer

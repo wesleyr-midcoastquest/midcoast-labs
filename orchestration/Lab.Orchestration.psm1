@@ -84,7 +84,7 @@ function Save-LabLedger {
     ) -join "`n"
     $ordered = foreach ($i in $Instances) {
         $h = [ordered]@{}
-        foreach ($k in 'name', 'role', 'origin', 'sequence', 'build_date', 'slot', 'vmid', 'ipv4', 'template_vmid', 'clone_mode', 'state', 'dc_mode', 'replaces', 'created_utc', 'updated_utc') {
+        foreach ($k in 'name', 'role', 'origin', 'sequence', 'build_date', 'slot', 'vmid', 'ipv4', 'template_vmid', 'template_owner', 'clone_mode', 'state', 'dc_mode', 'replaces', 'created_utc', 'updated_utc') {
             $v = $i.$k
             if ($null -ne $v -and "$v" -ne '') { $h[$k] = $v }
         }
@@ -105,13 +105,59 @@ function Save-LabLedger {
 
 # ── Template versions ─────────────────────────────────────────────────────
 
+function Get-LabNeutralTag {
+    # Tag on template versions built 1.7 or later: no site's addresses inside, so
+    # another lab on the node may clone them (templates.shared_from).
+    'site-neutral'
+}
+
+function Get-LabSharedTemplate {
+    # A borrowing site's current version of a family: the newest site-neutral
+    # template in the owner's range on this node, by name (<family>-<YYMMDD>-<NN>).
+    # The owner's ledger isn't readable from here; names are, and an owner deletes
+    # superseded versions once nothing uses them. Visible through the VM.Audit
+    # grant proxmox-setup.sh makes on the owner's template VMIDs. $null if none.
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] $Inventory,
+        [Parameter(Mandatory)] [string] $Family,
+        [string] $Token = (Get-LabPveToken -Inventory $Inventory)
+    )
+    $def = @($Inventory.templates.PSObject.Properties.Value | Where-Object template_name -eq $Family)[0]
+    if (-not $def -or $null -eq $def.shared_vmid_first) { return $null }
+    $pattern = "^$([regex]::Escape($Family))-\d{6}-\d{2}$"
+    $vms = @(Invoke-LabPveApi -Inventory $Inventory -Token $Token -Method GET -Path '/cluster/resources?type=vm')
+    $found = @($vms | Where-Object {
+        $tags = @(([string] $_.tags) -split '[;,\s]+')
+        [int] $_.vmid -ge [int] $def.shared_vmid_first -and [int] $_.vmid -le [int] $def.shared_vmid_last -and
+        $_.node -eq $Inventory.proxmox.node -and [int] $_.template -eq 1 -and $_.name -match $pattern -and
+        $tags -contains 'template' -and $tags -contains (Get-LabNeutralTag)
+    } | Sort-Object name -Descending)
+    if ($found.Count -eq 0) { return $null }
+    [pscustomobject]@{ name = $found[0].name; family = $Family; vmid = [int] $found[0].vmid; state = 'current'; shared = $true }
+}
+
+function Get-LabTemplateHint {
+    # What to do when a family has no current template, for error messages.
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] $Inventory, [Parameter(Mandatory)] [string] $Family)
+    if ($null -ne $Inventory.proxmox.templates_from) {
+        return "This site borrows its templates from the lab at vmid_base $($Inventory.proxmox.templates_from) (site.yaml templates.shared_from): build a $Family there (1.7 or later, so it is tagged $(Get-LabNeutralTag)), then check this site with ./orchestration/Test-LabSite.ps1."
+    }
+    "Build it: ./orchestration/Build-LabTemplate.ps1 -Template $(Get-LabTemplateKey -Inventory $Inventory -Family $Family)"
+}
+
 function Get-LabCurrentTemplate {
     # The current version of a template family (e.g. WIN2022-TEMPLATE), or $null.
+    # From the ledger; with -Inventory of a site that borrows its templates
+    # (templates.shared_from), from the owner's range on Proxmox instead.
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)] [string] $Family,
-        [AllowEmptyCollection()] [object[]] $Templates = @(Get-LabTemplateVersions -Path (Get-LabLedgerPath))
+        [AllowEmptyCollection()] [object[]] $Templates = @(Get-LabTemplateVersions -Path (Get-LabLedgerPath)),
+        $Inventory
     )
+    if ($Inventory -and $null -ne $Inventory.proxmox.templates_from) { return Get-LabSharedTemplate -Inventory $Inventory -Family $Family }
     @($Templates | Where-Object { $_.family -eq $Family -and $_.state -eq 'current' } | Sort-Object { [int] $_.vmid })[-1]
 }
 
@@ -149,7 +195,7 @@ function New-LabTemplateVersion {
         $vmid = $id; break
     }
     if ($null -eq $vmid) {
-        throw "No free VMID for a new $family in $($tpl.vmid_first)-$($tpl.vmid_last): every slot holds a version that's still in use. Rotate the VMs still on old versions, then run Build-LabTemplate again (it deletes unused versions first)."
+        throw "No free VMID for a new $family in $($tpl.vmid_first)-$($tpl.vmid_last): every slot holds a version that's still in use. Rotate the VMs still on old versions, then run Build-LabTemplate again (it deletes unused versions first). If other labs borrow this lab's templates (their site.yaml templates.shared_from), their VMs count too, and only they can rotate them: this lab's token can't see them; on the node, bash proxmox-teardown.sh --vmid-base $($Inventory.proxmox.vmid_base) --dry-run lists who uses which."
     }
     [pscustomobject][ordered]@{
         name        = '{0}-{1}-{2:D2}' -f $family, $stamp, $seq
@@ -192,7 +238,7 @@ function Remove-LabUnusedTemplates {
             Wait-LabPveTask -Inventory $Inventory -Token $Token -Upid (Invoke-LabPveApi -Inventory $Inventory -Token $Token -Method DELETE -Path "/nodes/$node/qemu/$($t.vmid)?purge=1&destroy-unreferenced-disks=1")
             Write-Host "Deleted unused template $($t.name) (VMID $($t.vmid))."
         } catch {
-            Write-Warning "Couldn't delete template $($t.name) (VMID $($t.vmid)); it probably still has linked clones: $($_.Exception.Message)"
+            Write-Warning "Couldn't delete template $($t.name) (VMID $($t.vmid)); it probably still has linked clones, perhaps another lab's (templates.shared_from: this token can't see those). Kept; the next run tries again. $($_.Exception.Message)"
             $keep.Add($t)
         }
     }
@@ -239,9 +285,12 @@ function New-LabInstance {
         -Format $Inventory.naming.format -MaxLength ([int] $Inventory.naming.max_length)
     # Pin the template version: the VM stays a (linked) clone of exactly this
     # template, even after a newer version is built.
-    $current = Get-LabCurrentTemplate -Family $def.template
-    if (-not $current) { throw "No $($def.template) has been built yet. Run ./orchestration/Build-LabTemplate.ps1 -Template $(Get-LabTemplateKey -Inventory $Inventory -Family $def.template) first." }
+    $current = Get-LabCurrentTemplate -Family $def.template -Inventory $Inventory
+    if (-not $current) { throw "No $($def.template) is available yet. $(Get-LabTemplateHint -Inventory $Inventory -Family $def.template)" }
     $inst.template_vmid = [int] $current.vmid
+    # A borrowed template (templates.shared_from): record whose, so the pin stays
+    # valid after this site stops borrowing or borrows from another lab.
+    if ($current.shared) { $inst.template_owner = [int] $Inventory.proxmox.templates_from }
     # And the clone mode: changing proxmox.clone_mode later affects only new VMs
     # (changing it on an existing VM would force Terraform to replace it).
     $inst.clone_mode = [string] $Inventory.proxmox.clone_mode
@@ -960,7 +1009,15 @@ function Deploy-LabInstance {
     $mac = @(Get-LabVmMac -Inventory $Inventory -Token $pveToken -VmId ([int] $Instance.vmid))
     if ($mac.Count -eq 0) { throw "Couldn't read the MAC address of VM $($Instance.vmid) from Proxmox." }
     $find = @{ ExpectedMac = $mac; Inventory = $Inventory; Token = $pveToken; VmId = [int] $Instance.vmid }
-    $session = Wait-LabGuest -Address $addresses -Credential $Credential -TimeoutSeconds 2400 @find
+    # Borrowed templates carry the owner lab's local Administrator password: try it
+    # last, and replace it with this site's before anything is pushed.
+    $templateCred = @(Get-LabTemplateCredentials -Inventory $Inventory)
+    try {
+        $session = Wait-LabGuest -Address $addresses -Credential (@($Credential) + $templateCred) -TimeoutSeconds 2400 @find
+    } catch {
+        if ($templateCred.Count -eq 0) { throw }
+        throw "$($_.Exception.Message) This site borrows templates (templates.shared_from): if a fresh clone refuses every password, the owner lab's local Administrator password has probably changed since '$($Inventory.secrets.entries.template_administrator)' was stored. Copy its current $($Inventory.secrets.entries.local_administrator) into that entry and run again."
+    }
     try {
         # A guest that already has lab metadata must have been set up as THIS
         # instance; otherwise it is some other instance's machine.
@@ -978,6 +1035,16 @@ function Deploy-LabInstance {
             # Never re-publish under a running bootstrap, -Retry or not.
             Write-Host "   bootstrap in progress ($($state.stage)); following it"
         } else {
+            if ($templateCred.Count -gt 0) {
+                # Idempotent: on a retry the password is already this site's.
+                $own = (Get-LabSecretCredential -Inventory $Inventory -UserName 'Administrator' -SecretName $Inventory.secrets.entries.local_administrator).Password
+                Invoke-Command -Session $session -ArgumentList $own -ScriptBlock {
+                    param([securestring] $Password)
+                    $admin = Get-LocalUser | Where-Object { $_.SID.Value -like 'S-1-5-21-*-500' }
+                    Set-LocalUser -InputObject $admin -Password $Password
+                }
+                Write-Host "   local Administrator: owner lab's template password replaced with this site's"
+            }
             Write-Host '   pushing platform, metadata and secrets'
             Publish-LabPayload -Session $session -Inventory $Inventory -Metadata $Metadata -Secrets $Secrets -Retry:$Retry
         }
@@ -1069,6 +1136,21 @@ function Get-LabGuestCredentials {
         DomainAdmin  = Get-LabSecretCredential -Inventory $Inventory -UserName "$nb\Administrator" -SecretName $sec.domain_administrator
         LabDeploy    = Get-LabSecretCredential -Inventory $Inventory -UserName "$nb\svc-labdeploy" -SecretName 'svc-labdeploy'
     }
+}
+
+function Get-LabTemplateCredentials {
+    # A site that borrows another lab's templates (templates.shared_from): the
+    # owner's local Administrator password, which a fresh clone still has. Used
+    # only for the first connection, before Deploy-LabInstance replaces it with
+    # this site's. Empty for a site that builds its own templates.
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] $Inventory)
+    if ($null -eq $Inventory.proxmox.templates_from) { return @() }
+    $name = $Inventory.secrets.entries.template_administrator
+    @(
+        Get-LabSecretCredential -Inventory $Inventory -UserName 'Administrator'   -SecretName $name
+        Get-LabSecretCredential -Inventory $Inventory -UserName '.\Administrator' -SecretName $name
+    )
 }
 
 # ── MGMT handover (files) ─────────────────────────────────────────────────
@@ -1291,6 +1373,7 @@ function Write-LabReport {
 Export-ModuleMember -Function Get-LabRepoRoot, Get-LabInventoryPath, Get-LabSitePath, Get-LabResolvedPath,
     Get-LabResolvedInventory, Export-LabResolvedInventory, Get-LabLedgerPath, Get-LabPlatformVersion, Get-LabRelease,
     Save-LabLedger, Get-LabCurrentTemplate, New-LabTemplateVersion, Remove-LabUnusedTemplates,
+    Get-LabNeutralTag, Get-LabSharedTemplate, Get-LabTemplateHint, Get-LabTemplateCredentials,
     New-LabInstance, Set-LabInstanceState, Unlock-LabVault, Get-LabSecretText, Get-LabSecretCredential, Get-LabGitIdentity, Set-LabGitIdentity,
     Invoke-LabPveApi, Wait-LabPveTask, Test-LabPveVm, Invoke-LabTerraform, Connect-LabGuest, Wait-LabGuest,
     Get-LabVmMac, Get-LabVmGuestAddress,

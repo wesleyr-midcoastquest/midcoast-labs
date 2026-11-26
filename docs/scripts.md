@@ -476,9 +476,13 @@ authoritative collision check):
   - every lab VMID is free, or already this lab's (carrying the lab's tag), and the
     pool and user aren't another site's
   - the ISOs are uploaded (Windows 11 + VirtIO are required for MGMT-00)
+  - templates (1.7): a site that borrows them (site.yaml templates.shared_from) needs
+    the owner's site-neutral versions on this node, on its template storage; a site
+    that builds its own is told when another lab here already has some it could use
 Setup:
   - pool, least-privilege role, terraform-prov@pve user, API tokens
-    (secrets printed ONCE: put them in KeePass), ACLs
+    (secrets printed ONCE: put them in KeePass), ACLs; when borrowing templates,
+    clone and read rights on the owner's template VMIDs (role MidCoastTemplateUser)
   - the MGMT-00 VM, unless it exists or CREATE_MGMT00=0, with an answer CD that
     installs Windows 11 unattended: disk, VirtIO drivers, a local admin account,
     no first-run screens, then guest tools, static address, time zone, name and
@@ -524,6 +528,9 @@ Removes:
   - with --include-backups: vzdump backups of those VMIDs
 Never touches: a VM in the block that isn't the lab's (it's listed and skipped), any
 other VMID, any other ISO, the storages, bridges or network.
+Keeps (1.7): templates that another lab's VMs are linked clones of (that lab borrows
+them, site.yaml templates.shared_from), and the pool while it holds them. Proxmox
+can't delete a template with linked clones anyway; the plan says who uses which.
 
 Outside Proxmox (not done here): remove the lab's machines in the Tailscale admin
 console, and anything you pointed at lab addresses by hand (router DNS, DHCP leases).

@@ -73,6 +73,7 @@ $siteSchema = [ordered]@{
     'proxmox'  = @('cluster', 'node', 'endpoint', 'insecure_tls', 'bridge', 'storage', 'vmid_base', 'clone_mode', 'pool', 'role', 'tag', 'service_account')
     'isos'     = @('windows_server_2022', 'windows_11', 'virtio')
     'tailscale' = @('enabled')
+    'templates' = @('shared_from')    # 1.7: borrow another lab's templates
 }
 foreach ($p in $siteRaw.PSObject.Properties) {
     if (-not $siteSchema.Contains($p.Name)) { Add-Finding 'Error' 'SiteSchema' "site.yaml has '$($p.Name)', which is not a site setting (allowed: $($siteSchema.Keys -join ', '))." ; continue }
@@ -131,6 +132,20 @@ if ("$($siteRaw.proxmox.endpoint)" -match '\.ts\.net[:/]|//100\.(6[4-9]|[7-9]\d|
 }
 if ($null -ne $siteRaw.proxmox.clone_mode -and "$($siteRaw.proxmox.clone_mode)" -cnotin 'linked', 'full') {
     Add-Finding 'Error' 'SiteSchema' "proxmox.clone_mode must be 'linked' or 'full', lower case (got '$($siteRaw.proxmox.clone_mode)')."
+}
+if ($siteRaw.templates -and $null -ne $siteRaw.templates.shared_from) {
+    $sf = $siteRaw.templates.shared_from
+    foreach ($q in @($sf.PSObject.Properties)) {
+        if ($q.Name -ne 'vmid_base') { Add-Finding 'Error' 'SiteSchema' "site.yaml has templates.shared_from.$($q.Name); only vmid_base may be set." }
+    }
+    $own = "$($siteRaw.proxmox.vmid_base)"
+    if ("$($sf.vmid_base)" -notmatch '^\d+$') {
+        Add-Finding 'Error' 'SharedTemplates' "templates.shared_from.vmid_base must be the owner lab's proxmox.vmid_base, a whole number (got '$($sf.vmid_base)')."
+    } elseif ($own -match '^\d+$' -and [math]::Abs([int64] $sf.vmid_base - [int64] $own) -lt 150) {
+        Add-Finding 'Error' 'SharedTemplates' "templates.shared_from.vmid_base $($sf.vmid_base) is this site's own block or overlaps it (proxmox.vmid_base $own); it names ANOTHER lab, whose 150-ID block is separate."
+    } elseif ([int64] $sf.vmid_base -lt 100) {
+        Add-Finding 'Error' 'SharedTemplates' "templates.shared_from.vmid_base $($sf.vmid_base) must be at least 100."
+    }
 }
 if ($siteRaw.proxmox.service_account) {
     foreach ($q in @($siteRaw.proxmox.service_account.PSObject.Properties)) {
@@ -592,6 +607,18 @@ foreach ($i in $ledger) {
     if ("$($i.clone_mode)" -cnotin 'linked', 'full') { Add-Finding 'Error' 'LedgerTemplate' "Ledger instance $($i.name) has clone_mode '$($i.clone_mode)'; expected 'linked' or 'full' (recorded when it was allocated)." }
     $t = @($tplLedger | Where-Object { [int] $_.vmid -eq [int] $i.template_vmid })[0]
     $roleDef = @($inv.servers | Where-Object role -eq $i.role)[0]
+    # Borrowed templates (templates.shared_from) aren't in this ledger. Such a pin
+    # records its owner (template_owner, that lab's vmid_base) and must lie in the
+    # owner's range for the role's family, whatever site.yaml says today: machines
+    # keep their template after a site stops borrowing or borrows from another lab.
+    if (-not $t -and $null -ne $i.template_owner -and $roleDef) {
+        $fam = @($inv.templates.PSObject.Properties.Value | Where-Object template_name -eq $roleDef.template)[0]
+        $lo = [int] $i.template_owner + [int] $fam.vmid_offsets.first; $hi = [int] $i.template_owner + [int] $fam.vmid_offsets.last
+        if ([int] $i.template_vmid -lt $lo -or [int] $i.template_vmid -gt $hi) {
+            Add-Finding 'Error' 'LedgerTemplate' "Ledger instance $($i.name) is pinned to template VMID $($i.template_vmid), outside $($roleDef.template)'s range $lo-$hi of the lab it was borrowed from (template_owner $($i.template_owner))."
+        }
+        continue
+    }
     if (-not $t) { Add-Finding 'Error' 'LedgerTemplate' "Ledger instance $($i.name) is pinned to template VMID $($i.template_vmid), which the ledger doesn't list." }
     elseif ($roleDef -and $t.family -ne $roleDef.template) { Add-Finding 'Error' 'LedgerTemplate' "Ledger instance $($i.name) ($($i.role)) is pinned to $($t.name), but $($i.role) uses $($roleDef.template)." }
 }

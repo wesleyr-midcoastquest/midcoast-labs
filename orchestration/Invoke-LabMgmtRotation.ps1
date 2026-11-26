@@ -113,10 +113,10 @@ try {
 
         $token = Get-LabPveToken -Inventory $inv
         $family = (Get-LabMgmtDefinition -Inventory $inv).template
-        $tplCur = Get-LabCurrentTemplate -Family $family
+        $tplCur = Get-LabCurrentTemplate -Family $family -Inventory $inv
         $tplVm  = if ($tplCur) { Test-LabPveVm -Inventory $inv -Token $token -VmId ([int] $tplCur.vmid) }
         if (-not $tplVm -or -not $tplVm.template) {
-            throw "No current $family template$(if ($tplCur) { " ($($tplCur.name) at VMID $($tplCur.vmid) is missing from Proxmox)" }). Build it first: ./orchestration/Build-LabTemplate.ps1 -Template $(Get-LabTemplateKey -Inventory $inv -Family $family)"
+            throw "No current $family template$(if ($tplCur) { " ($($tplCur.name) at VMID $($tplCur.vmid) is missing from Proxmox)" }). $(Get-LabTemplateHint -Inventory $inv -Family $family)"
         }
 
         Push-Location (Get-LabRepoRoot)

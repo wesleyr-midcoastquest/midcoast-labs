@@ -366,9 +366,9 @@ try {
 
             # Template: the replacement is cloned from the current WIN2022 version.
             $family = (Get-LabRoleDefinition -Inventory $inv -Role 'DC').template
-            $tplCur = Get-LabCurrentTemplate -Family $family
+            $tplCur = Get-LabCurrentTemplate -Family $family -Inventory $inv
             $tplVm  = if ($tplCur) { Test-LabPveVm -Inventory $inv -Token $pveTok -VmId ([int] $tplCur.vmid) }
-            if (-not $tplVm -or -not $tplVm.template) { throw "No current $family template in Proxmox. Build it: ./orchestration/Build-LabTemplate.ps1 -Template $(Get-LabTemplateKey -Inventory $inv -Family $family)" }
+            if (-not $tplVm -or -not $tplVm.template) { throw "No current $family template in Proxmox. $(Get-LabTemplateHint -Inventory $inv -Family $family)" }
 
             Write-Host "`n-- Health of the current DCs" -ForegroundColor Cyan
             if (-not (Test-DcHealth $m.Active)) { throw 'A current DC has Critical validation failures. Fix them before rotating; a rotation needs healthy replication.' }

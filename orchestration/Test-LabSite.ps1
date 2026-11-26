@@ -193,6 +193,38 @@ if (-not $v.Ok) {
             Add-Finding 'Error' 'Ledger' "The ledger lists machines that don't exist on Proxmox: $($gone -join '; '). The ledger describes a lab that is gone: reset it with ./orchestration/Reset-LabLedger.ps1 (it refuses while any listed VM still exists), then run again. For a single VM deleted by hand, remove its entry from inventory/instances.yaml and the Terraform state instead."
         }
     }
+
+    # Templates: does each family have one to clone? (1.7) A site that borrows them
+    # (templates.shared_from) needs the owner's site-neutral versions, visible and on
+    # its own template storage; a site that builds its own is told when it has none
+    # yet, and that another lab's could be borrowed instead.
+    $from = $inv.proxmox.templates_from
+    if ($null -ne $from) {
+        try { $null = Get-LabSecretText -Inventory $inv -Name $inv.secrets.entries.template_administrator }
+        catch { Add-Finding 'Error' 'Template' "The vault has no '$($inv.secrets.entries.template_administrator)' entry. Borrowed templates carry the owner lab's local Administrator password: copy it there from the owner's vault ($($inv.secrets.entries.local_administrator)); each clone gets this site's own password on first connection." }
+    }
+    foreach ($t in $inv.templates.PSObject.Properties) {
+        $family = $t.Value.template_name
+        if ($null -ne $from) {
+            $cur = $null
+            try { $cur = Get-LabSharedTemplate -Inventory $inv -Family $family -Token $token } catch { }
+            if (-not $cur) {
+                Add-Finding 'Error' 'Template' "No site-neutral $family in VMIDs $($t.Value.shared_vmid_first)-$($t.Value.shared_vmid_last) on $node (the lab at vmid_base $from, templates.shared_from). Either that lab hasn't built one with 1.7 or later (Build-LabTemplate.ps1 tags them $(Get-LabNeutralTag); older ones only work for their own lab), or this site's access to them is missing: run the site kit's proxmox-setup.sh again."
+                continue
+            }
+            Add-Finding 'Info' 'Template' "$family`: borrowing $($cur.name) (VMID $($cur.vmid))"
+            if ($inv.proxmox.clone_mode -ceq 'linked') {
+                $cfg = Invoke-Probe "/nodes/$node/qemu/$($cur.vmid)/config"
+                $disk = if ($cfg.Ok) { [string] $cfg.Data.scsi0 } else { '' }
+                $store = ($disk -split ':')[0]
+                if ($store -and $store -ne $pve.storage.templates) {
+                    Add-Finding 'Error' 'Template' "$($cur.name) is on storage '$store', and linked clones live on their template's storage: set proxmox.storage.templates to '$store' in site.yaml (or clone_mode: full)."
+                }
+            }
+        } elseif (-not (Get-LabCurrentTemplate -Family $family)) {
+            Add-Finding 'Warning' 'Template' "No $family yet: build it (runbook step 7, ./orchestration/Build-LabTemplate.ps1 -Template $($t.Name)). If another lab on this node already has site-neutral templates, this site can borrow them instead of building: bash proxmox-setup.sh check (on the node) lists them, since this token can't see other labs' VMs."
+        }
+    }
 }
 
 # ── Network ───────────────────────────────────────────────────────────────

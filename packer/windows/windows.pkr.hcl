@@ -54,10 +54,13 @@ locals {
   pve     = local.inv.proxmox
   stamp   = formatdate("YYYYMMDD-hhmm", timestamp())
 
-  // Every address an MGMT can hold. Guests allow WinRM from all of them, so a
-  // replacement MGMT (built into the spare slot) can manage the whole lab.
-  mgmt_role = [for s in local.inv.servers : s if s.role == "MGMT"][0]
-  mgmt_ips  = try([for sl in local.mgmt_role.slots : sl.ipv4], [local.mgmt_role.ipv4])
+  // Every host number an MGMT can hold (lab.yaml, servers[MGMT].slots[*].host).
+  // Guests allow WinRM from all of them, so a replacement MGMT (built into the
+  // spare slot) can manage the whole lab. Host numbers, not addresses: the clone
+  // puts them in its own subnet on first boot, so one template suits every site
+  // (1.7, templates.shared_from).
+  mgmt_role  = [for s in local.inv.servers : s if s.role == "MGMT"][0]
+  mgmt_hosts = [for sl in local.mgmt_role.slots : sl.host]
 
   // Unattend files take passwords as base64(UTF-16LE(password + suffix)).
   admin_pw_b64     = textencodebase64("${var.local_admin_password}AdministratorPassword", "UTF-16LE")
@@ -225,7 +228,7 @@ build {
 
   provisioner "file" {
     content = templatefile("${path.root}/files/Initialize-LabRemoting.ps1.pkrtpl", {
-      mgmt_ips = join(",", local.mgmt_ips)
+      mgmt_hosts = join(",", local.mgmt_hosts)
     })
     destination = "${local.cbi_ls}/Initialize-LabRemoting.ps1"
   }
