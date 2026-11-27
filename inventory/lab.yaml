@@ -15,7 +15,7 @@
 
 version: "1.8"                                   # CHANGED: 1.7 -> 1.8 (Tailscale per role: MGMT only)
                                                  # Compatibility number; changes rarely (see CHANGELOG.md).
-release: LAB-261127-00                           # ADDED: release name, LAB-<YYMMDD>-<NN>; every merged change gets a new one
+release: LAB-261127-01                           # ADDED: release name, LAB-<YYMMDD>-<NN>; every merged change gets a new one
 
 environment:
   name: MidCoast-Lab
@@ -70,7 +70,8 @@ network:
   # bridge, subnet, gateway, ntp: from site.yaml
 
   # CHANGED: dns.primary/secondary removed. With rotating DCs, lab DNS servers
-  # are always the addresses of the active DC instances (see the DC slots).
+  # are the DC slots' addresses (LAB-261127-01): every slot for other machines,
+  # the other slots then loopback for a DC. Fixed, so rotations don't change them.
 
   static_range:                                  # ADDED: host numbers; every lab address falls here,
     start_host: 10                               # and the router's DHCP pool must NOT include it

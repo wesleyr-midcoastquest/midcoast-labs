@@ -5,8 +5,9 @@
     template, in two stages with a checkpoint between them.
 
 .DESCRIPTION
-    Run on the active MGMT, in an elevated PowerShell 7 window (the last step of
-    Add points this machine's own DNS client at the new set of DCs).
+    Run on the active MGMT, in PowerShell 7 (it needn't be elevated: since
+    LAB-261127-01 machines that aren't DCs use every DC slot address for DNS,
+    so the rotation doesn't change this machine).
 
     Add      builds the replacement and moves everything onto it:
       1. Pre-flight: inventory, site, both DCs pass validation, a free DC slot,
@@ -17,8 +18,9 @@
          and is gated on its own validation (ledger: active).
       4. Moves every FSMO role the old DC holds to the new one (and with the PDC
          emulator, the external time source).
-      5. Marks the old DC retiring and points every DNS client in the lab (DCs,
-         every other lab machine, this MGMT) at the new set of DCs.
+      5. Marks the old DC retiring and makes sure each DC's DNS client has its
+         fixed list (the other DC slots, then loopback; only DCs built before
+         LAB-261127-01 change). Other lab machines already use every DC slot.
       6. Re-validates the active DCs.
       The old DC keeps running as a third DC until Retire. Check anything you
       like in between; nothing depends on it any more.
@@ -29,7 +31,7 @@
              VM and drops it from the ledger.
 
     Abort    (before Retire) undoes Add: the old DC becomes active again, FSMO
-             and DNS clients move back, and the replacement is demoted and
+             moves back, and the replacement is demoted and
              destroyed, the same way Retire removes a DC.
 
     Every stage can be re-run after a failure; it picks up where it stopped.
@@ -183,39 +185,28 @@ $setDns = {
 }
 
 function Set-LabDnsClients {
-    # Every DNS client in the lab -> the active DCs. DCs: partners first,
-    # loopback last. The retiring DC (if any): the active DCs only, so it can
-    # still find the domain while it's demoted. Everything else: the active DCs.
+    # The DCs' DNS clients -> their fixed lists: the other DC slots, then loopback
+    # (Get-LabDnsClientServers). A no-op on a DC built from LAB-261127-01; it brings
+    # a DC built before it, whose list named the DCs active then, onto the fixed list.
+    # Machines that aren't DCs (MGMT included) use all three slot addresses, which
+    # never change, so they aren't touched: no elevation needed (issue #27).
     param([object[]] $ActiveDcs, $RetiringDc)
     $ips = @($ActiveDcs | ForEach-Object ipv4)
     foreach ($dc in $ActiveDcs) {
-        $list = @($ips | Where-Object { $_ -ne $dc.ipv4 }) + '127.0.0.1'
+        $list = @(Get-LabDnsClientServers -Inventory $inv -Role 'DC' -IPv4 $dc.ipv4)
         Invoke-OnDc $dc -ArgumentList $list, $ips -ScriptBlock $setDns | Out-Null
         Write-Host "   $($dc.name): $($list -join ', ')"
     }
     if ($RetiringDc) {
+        # Its partners are the active DCs, so it still finds the domain while it's demoted.
+        $list = @(Get-LabDnsClientServers -Inventory $inv -Role 'DC' -IPv4 $RetiringDc.ipv4)
         $s = Connect-Dc $RetiringDc -Optional
         if ($s) {
-            try { Invoke-Command -Session $s -ArgumentList $ips, $null -ScriptBlock $setDns | Out-Null; Write-Host "   $($RetiringDc.name) (retiring): $($ips -join ', ')" }
+            try { Invoke-Command -Session $s -ArgumentList $list, $null -ScriptBlock $setDns | Out-Null; Write-Host "   $($RetiringDc.name) (retiring): $($list -join ', ')" }
             finally { Remove-PSSession $s -ErrorAction SilentlyContinue }
         } else { Write-Warning "$($RetiringDc.name) isn't reachable; its DNS client wasn't changed." }
     }
-    $others = @($instances | Where-Object { $_.role -ne 'DC' -and $_.state -eq 'active' -and $_.name -ne $env:COMPUTERNAME })
-    foreach ($o in $others) {
-        $mac = @(Get-LabVmMac -Inventory $inv -Token $pveTok -VmId ([int] $o.vmid))
-        $s = Connect-LabGuest -Address @($o.ipv4) -Credential @($cred.DomainAdmin, $cred.LabDeploy) -ExpectedMac $mac
-        if (-not $s) { Write-Warning "$($o.name) ($($o.ipv4)) isn't reachable; set its DNS servers to $($ips -join ', ') by hand."; continue }
-        try { Invoke-Command -Session $s -ArgumentList $ips, $ips -ScriptBlock $setDns | Out-Null; Write-Host "   $($o.name): $($ips -join ', ')" }
-        finally { Remove-PSSession $s -ErrorAction SilentlyContinue }
-    }
-    # This machine.
-    $elevated = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-    if ($elevated) {
-        & $setDns $ips $ips
-        Write-Host "   $env:COMPUTERNAME (this MGMT): $($ips -join ', ')"
-    } else {
-        Write-Warning "Not elevated: set this machine's DNS servers yourself, in an elevated window: Set-DnsClientServerAddress -InterfaceIndex <n> -ServerAddresses $($ips -join ',')"
-    }
+    Write-Host "   other lab machines: unchanged (every DC slot: $(@(Get-LabDnsClientServers -Inventory $inv -Role 'MGMT') -join ', '))"
 }
 
 function Remove-RotationDc {
@@ -421,13 +412,13 @@ try {
             Save-LabLedger -Instances $instances
         }
 
-        # ── FSMO, then the old DC out of every DNS client ───────────────────
+        # ── FSMO, then the DCs' DNS clients ─────────────────────────────────
         Write-Host "`n-- FSMO roles" -ForegroundColor Cyan
         Move-Fsmo -From $old -To $new
         $instances = @(Set-LabInstanceState -Instances $instances -Name $old.name -State 'retiring')
         Save-LabLedger -Instances $instances
         $active = @(Get-DcState $instances).Active
-        Write-Host "`n-- DNS clients -> $(($active | ForEach-Object ipv4) -join ', ')" -ForegroundColor Cyan
+        Write-Host "`n-- DC DNS clients (the other DC slots, then loopback)" -ForegroundColor Cyan
         Set-LabDnsClients -ActiveDcs $active -RetiringDc $old
 
         # ── Re-validate ─────────────────────────────────────────────────────
@@ -472,7 +463,7 @@ workstation) should now use $(($active | ForEach-Object ipv4) -join ' / ').
 
         Write-Host "`n-- Health of the DCs that stay" -ForegroundColor Cyan
         if (-not (Test-DcHealth $m.Active)) { throw "An active DC has Critical failures; $($old.name) is kept until they're fixed." }
-        Write-Host "`n-- DNS clients -> $(($m.Active | ForEach-Object ipv4) -join ', ')" -ForegroundColor Cyan
+        Write-Host "`n-- DC DNS clients (the other DC slots, then loopback)" -ForegroundColor Cyan
         Set-LabDnsClients -ActiveDcs $m.Active -RetiringDc $old
 
         Remove-RotationDc -Target $old -Keepers $m.Active
@@ -498,7 +489,7 @@ workstation) should now use $(($active | ForEach-Object ipv4) -join ' / ').
         Save-LabLedger -Instances $instances
         $keepers = @(Get-DcState $instances).Active
         Write-Host "   $($old.name) active again; removing $($new.name)"
-        Write-Host "`n-- DNS clients -> $(($keepers | ForEach-Object ipv4) -join ', ')" -ForegroundColor Cyan
+        Write-Host "`n-- DC DNS clients (the other DC slots, then loopback)" -ForegroundColor Cyan
         Set-LabDnsClients -ActiveDcs $keepers -RetiringDc $new
 
         # FSMO goes back to the DC it came from (Remove-RotationDc would pick any keeper).

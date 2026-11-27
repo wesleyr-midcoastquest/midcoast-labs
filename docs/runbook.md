@@ -255,8 +255,9 @@ cd {{repo.path}}
 ./setup/mgmt/Join-LabDomain.ps1
 ```
 
-It points DNS at the DCs Phase 1 built, joins `{{ad.domain}}` into `{{mgmt.ou_dn}}` as
-`svc-domainjoin` (the account Phase 1 created for joining computers; its password comes
+It points DNS at the three DC slot addresses (the two DCs Phase 1 built and the spare
+slot; the list never changes, so DC rotations leave it alone), joins `{{ad.domain}}`
+into `{{mgmt.ou_dn}}` as `svc-domainjoin` (the account Phase 1 created for joining computers; its password comes
 from the vault), schedules the post-join rules for the next start-up (the Tier 0 group
 `{{tier0.group}}` may use Remote Desktop, git may use the repo under any account, and only
 SYSTEM, Administrators and `{{tier0.group}}` may use `{{lab.root}}`), and restarts.

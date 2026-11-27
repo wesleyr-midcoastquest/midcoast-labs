@@ -291,6 +291,30 @@ function Get-LabRoleAddresses {
     if ($def.slots) { @($def.slots | ForEach-Object { [string] $_.ipv4 }) } else { @([string] $def.ipv4) }
 }
 
+function Get-LabDnsClientServers {
+    # A lab machine's DNS servers (LAB-261127-01, issue #27). They come from the DC
+    # pool's slots, not from which DCs are active, so they never change and a DC
+    # rotation has no DNS client to update.
+    #   A DC:              the other slots (slot order), then loopback (DNS-004).
+    #   Everything else:   every DC slot, in slot order (A, B, C).
+    # One slot is empty outside a rotation; Windows moves past a server that doesn't
+    # answer after about a second and prefers the one that did, so it costs an
+    # occasional slow lookup, not failures. At least two slots always hold a DC.
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] $Inventory,
+        [Parameter(Mandatory)] [string] $Role,
+        # A DC's own address (left out of its list).
+        [string] $IPv4
+    )
+    $def = Get-LabRoleDefinition -Inventory $Inventory -Role 'DC'
+    if (-not $def.slots) { throw "lab.yaml role DC has no slots." }
+    $slots = @(@($def.slots) | Sort-Object { [string] $_.id } | ForEach-Object { [string] $_.ipv4 })
+    if ($Role -ne 'DC') { return $slots }
+    if (-not $IPv4) { throw "Get-LabDnsClientServers: a DC needs -IPv4 (its own address)." }
+    @(@($slots | Where-Object { $_ -ne $IPv4 }) + '127.0.0.1')
+}
+
 # ── Tiering ─────────────────────────────────────────────────────────────
 
 function Get-LabTierOU {
@@ -364,6 +388,6 @@ function Get-LabActiveDCs {
 
 Export-ModuleMember -Function Get-LabInventory, ConvertTo-LabYymmdd, New-LabHostname,
     Get-LabRoleDefinition, Test-LabRoleTailscale, Get-LabTemplateKey, Get-LabDomainDN, ConvertTo-LabOUDistinguishedName,
-    Get-LabPrefixLength, Get-LabRoleAddresses, ConvertTo-LabSiteSlug, Get-LabInstances, Get-LabTemplateVersions, Get-LabActiveDCs,
+    Get-LabPrefixLength, Get-LabRoleAddresses, Get-LabDnsClientServers, ConvertTo-LabSiteSlug, Get-LabInstances, Get-LabTemplateVersions, Get-LabActiveDCs,
     Get-LabTierOU, Get-LabOUTier, Get-LabComputerOUs, Get-LabGroupNames,
     ConvertTo-LabHostAddress, Resolve-LabInventory, Import-LabInventory

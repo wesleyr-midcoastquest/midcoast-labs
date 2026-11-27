@@ -145,7 +145,8 @@ try {
         Write-Host "`n-- $($new.name)" -ForegroundColor Cyan
         $cred = Get-LabGuestCredentials -Inventory $inv
         $creds = @($cred.LocalAdmin, $cred.LocalAdmin2, $cred.DomainAdmin)
-        $metadata = New-LabMetadata -Inventory $inv -Instance $new -DnsServers @($dcs | ForEach-Object ipv4)
+        # DNS: every DC slot, not just the active DCs, so DC rotations never touch it (issue #27).
+        $metadata = New-LabMetadata -Inventory $inv -Instance $new -DnsServers @(Get-LabDnsClientServers -Inventory $inv -Role 'MGMT')
         $secrets  = Add-LabTailscaleSecret -Inventory $inv -Role 'MGMT' -Secrets @{ 'svc-domainjoin' = Get-LabSecretText -Inventory $inv -Name 'svc-domainjoin' }
         $result = Deploy-LabInstance -Inventory $inv -Instance $new -Metadata $metadata -Secrets $secrets `
             -Credential $creds -ExtraAddress @($tf.($new.name).agent_ipv4) -Retry:$Retry

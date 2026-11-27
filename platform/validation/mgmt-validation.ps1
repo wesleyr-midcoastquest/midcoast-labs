@@ -55,9 +55,19 @@ $results += Invoke-LabCheck -Id 'MGMT-004' -Check {
 }
 
 $results += Invoke-LabCheck -Id 'MGMT-005' -Check {
-    $dcs = @($Metadata.dns_servers)
-    $bad = @($dcs | Where-Object { -not (Test-NetConnection -ComputerName $_ -Port 5986 -WarningAction SilentlyContinue).TcpTestSucceeded })
-    @{ Passed = ($dcs.Count -gt 0 -and $bad.Count -eq 0); Detail = if ($bad) { "no WinRM/HTTPS to: $($bad -join ', ')" } else { "DCs: $($dcs -join ', ')" } }
+    # Every DC slot (MGMT's DNS servers since LAB-261127-01, issue #27). One slot is
+    # empty outside a rotation, so this passes when at least the DC role's instance
+    # count (two) answer, and names the slot that doesn't.
+    $slots  = @(Get-LabDnsClientServers -Inventory $Inventory -Role 'MGMT')
+    $want   = [int] (Get-LabRoleDefinition -Inventory $Inventory -Role 'DC').instances
+    if ($want -lt 1) { $want = 1 }
+    $bad    = @($slots | Where-Object { -not (Test-NetConnection -ComputerName $_ -Port 5986 -WarningAction SilentlyContinue).TcpTestSucceeded })
+    $ok     = @($slots | Where-Object { $bad -notcontains $_ })
+    $passed = $ok.Count -ge $want
+    $detail = if ($ok) { "DCs: $($ok -join ', ')" } else { 'no DC answers' }
+    if ($bad) { $detail += "; no WinRM/HTTPS to: $($bad -join ', ')$(if ($passed) { ' (the empty slot)' })" }
+    if (-not $passed) { $detail = "only $($ok.Count) of $want DCs answer. $detail" }
+    @{ Passed = $passed; Detail = $detail }
 }
 
 $results += Invoke-LabCheck -Id 'MGMT-006' -Check {

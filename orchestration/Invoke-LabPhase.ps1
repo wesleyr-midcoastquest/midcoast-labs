@@ -175,8 +175,9 @@ try {
         $session = Wait-LabGuest -Address @($dc.ipv4) -Credential @($domainAdmin, $labDeploy) -TimeoutSeconds 600 `
             -ExpectedMac @(Get-LabVmMac -Inventory $inv -Token $pveTok -VmId ([int] $dc.vmid))
         try {
-            $partners = @($allIps | Where-Object { $_ -ne $dc.ipv4 })
-            Invoke-Command -Session $session -ArgumentList (, (@($partners) + '127.0.0.1')) -ScriptBlock {
+            # The other DC slots, then loopback: fixed, so DC rotations leave it alone (issue #27).
+            $servers = @(Get-LabDnsClientServers -Inventory $inv -Role 'DC' -IPv4 $dc.ipv4)
+            Invoke-Command -Session $session -ArgumentList (, $servers) -ScriptBlock {
                 param($Servers)
                 Import-Module 'C:\ProgramData\MidCoastLab\Platform\modules\Lab.System\Lab.System.psm1' -Force -DisableNameChecking
                 Set-LabDnsClient -Servers $Servers

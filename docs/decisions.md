@@ -350,7 +350,7 @@ re-enabled on first boot, because client SKUs disable it after sysprep.
 ## DC rotation
 
 **Two stages with a checkpoint.** `Add` builds the replacement and moves everything onto
-it (FSMO roles, the PDC emulator's external time source, every DNS client in the lab);
+it (FSMO roles, the PDC emulator's external time source);
 `Retire` demotes and destroys the old DC. Between them the old DC still runs as a third DC
 that nothing depends on, so the change can be checked before anything is removed, and
 `Abort` can still undo it. Same shape as the MGMT handover, for the same reason: the risky,
@@ -361,12 +361,30 @@ every rotation also brings the DC onto the latest patched template and restarts 
 evaluation clock. The forest itself is never rebuilt.
 
 **Addresses move with the slot.** The new DC takes the free slot of three (`.10`–`.12`),
-so the lab's DNS servers change address with each rotation. The alternative, re-IPing the
-new DC onto the old one's address after demotion, adds a risky step (a DC's address is in
-DNS, replication metadata and every client's resolver cache) to save repointing clients,
-which the pipeline can do itself because the ledger lists every lab machine. Machines
-outside the lab that were pointed at a DC by hand are the exception; Add prints the new
-addresses.
+so the active DCs change address with each rotation. The alternative, re-IPing the new
+DC onto the old one's address after demotion, adds a risky step (a DC's address is in DNS,
+replication metadata and every client's resolver cache) to save repointing clients, and
+since LAB-261127-01 no lab client needs repointing anyway (next section). Machines outside
+the lab that were pointed at a DC by hand are the exception; Add prints the new addresses.
+
+**DNS clients use every DC slot (LAB-261127-01).** Until then the rotation repointed every
+DNS client at the DCs active at the time, but it could repoint MGMT itself, the machine
+running it, only from an elevated window; from a normal one MGMT was left with a retired
+DC as one of its two DNS servers (issue #27). Now the lists come from the DC pool, not the
+ledger, and never change: a machine that isn't a DC gets all three slot addresses in slot
+order (A, B, C), in its build metadata and from `Join-LabDomain.ps1`; a DC gets the other
+two slots, then loopback (still partners first, loopback last: `DNS-004`). One place
+computes them, `Get-LabDnsClientServers` (Lab.Inventory). The cost is the empty slot: at
+least two slots always hold a DC (three during a rotation), and when the server Windows
+tries first doesn't answer it moves to the next after about a second and prefers the one
+that answered for a while, so it's an occasional one-second lookup, not a failure; on a DC
+that retry falls on its own lookups when its preferred partner is the empty slot. `MGMT-005`
+passes when at least two of the slots answer WinRM/HTTPS and names the one that doesn't.
+The rotation still sets each DC's list, which changes only DCs built before this release.
+A slot address must never go to anything else: `Test-LabInventory` rejects another role on
+it (`DuplicateIP`), every slot is inside the static range the router's DHCP pool must
+exclude (`IPOutsideStaticRange`), and `Test-LabSite` reports anything outside the lab that
+answers on a free lab address.
 
 **Demote, don't delete.** A reachable DC is demoted (`Uninstall-ADDSDomainController`),
 which removes its own objects cleanly. Only a DC that can't be reached is handled with

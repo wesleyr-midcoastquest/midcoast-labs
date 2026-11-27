@@ -18,6 +18,42 @@ Two numbers, in `inventory/lab.yaml`:
 Every release section starts with what it needs: *nothing*, *rebuild templates*, *rotate
 DCs / MGMT*, or *site.yaml change*. Details and reasons: [docs/decisions.md](docs/decisions.md).
 
+## LAB-261127-01 (compatibility 1.8): DNS clients use every DC slot
+
+Needs: one line on an existing MGMT (below), or nothing until its next rotation. DCs need
+nothing: each DC rotation puts them on the new lists (issue #27).
+
+Fixed:
+- **A DC rotation left MGMT with a retired DC as a DNS server.** The rotation repointed
+  every DNS client at the active DCs, but MGMT itself, the machine running it, only from an
+  elevated window; otherwise it printed "Not elevated: set this machine's DNS servers
+  yourself" and MGMT kept one dead and one live DNS server after Retire.
+
+Changed:
+- **DNS clients come from the DC slots, not from which DCs are active**, so they never
+  change and a rotation has no DNS client to repoint:
+  - machines that aren't DCs (MGMT, later member roles): all three DC slot addresses, in
+    slot order (A, B, C): in the build metadata of a pipeline-built MGMT, and from
+    `setup/mgmt/Join-LabDomain.ps1` for the hand-built one;
+  - DCs: the other two slots, then loopback (partners first, loopback last, as `DNS-004`
+    checks): after promotion, in Phase 1's final step and at each rotation.
+  One slot is empty outside a rotation. Windows moves past a server that doesn't answer
+  after about a second and prefers the one that did, so it costs an occasional slow
+  lookup, not failures.
+- **`Invoke-LabDcRotation.ps1` needn't be elevated any more**: it changes no machine but
+  the DCs' own DNS lists (and on DCs built from this release, not even those). It no longer repoints other lab
+  machines or this MGMT.
+- **`MGMT-005`** checks WinRM/HTTPS to every DC slot and passes when at least two answer
+  (the DC role's instance count), naming the slot that doesn't.
+
+To do by hand, on an existing MGMT, in an **elevated** PowerShell 7 window (`.10`–`.12`
+on your lab subnet are the three DC slots):
+
+```powershell
+$i = (Get-NetRoute -DestinationPrefix '0.0.0.0/0' | Sort-Object RouteMetric | Select-Object -First 1).ifIndex
+Set-DnsClientServerAddress -InterfaceIndex $i -ServerAddresses <subnet>.10,<subnet>.11,<subnet>.12
+```
+
 ## LAB-261127-00 (compatibility 1.8): Tailscale on MGMT only
 
 Needs: rotate DCs (nothing at once: each DC built from this release has no Tailscale, and
