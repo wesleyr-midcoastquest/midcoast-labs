@@ -428,7 +428,7 @@ foreach ($s in @($inv.servers | Where-Object initial)) {
 # MGMT: handover paths, and the role every guest firewall trusts.
 $mgmt = @($inv.servers | Where-Object role -eq 'MGMT')
 if ($mgmt.Count -eq 1) {
-    foreach ($k in 'repo_path', 'vault_path', 'lock_path', 'cert_lock_path') {
+    foreach ($k in 'repo_path', 'vault_path', 'lock_path', 'cert_lock_path', 'cert_path', 'logs_path') {
         if (-not $mgmt[0].handover.$k) { Add-Finding 'Error' 'Schema' "MGMT is missing handover.$k." }
     }
     foreach ($k in 'git', 'terraform', 'packer', 'vscode', 'keepassxc') {

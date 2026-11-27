@@ -1226,9 +1226,157 @@ function Copy-LabFileToSession {
     [pscustomobject]@{ Path = $Path; Destination = $Destination; Sha256 = $local }
 }
 
+function Copy-LabSharedFile {
+    # Copies one file even while another process has it open for writing (a log,
+    # this Prepare's own transcript), keeping its last-write time so log
+    # retention ages it as it would have on the old machine.
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] [string] $Path, [Parameter(Mandatory)] [string] $Destination)
+    $in = [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare] 'ReadWrite, Delete')
+    try {
+        $out = [IO.File]::Create($Destination)
+        try { $in.CopyTo($out) } finally { $out.Dispose() }
+    } finally { $in.Dispose() }
+    [IO.File]::SetLastWriteTimeUtc($Destination, [IO.File]::GetLastWriteTimeUtc($Path))
+}
+
+function Send-LabFolder {
+    # Copies a folder to the new MGMT as one zip: staged locally (files opened
+    # with FileShare.ReadWrite, so logs still being written can be read), zipped
+    # with ZipFile (Compress-Archive skips hidden items, and .git is hidden on
+    # Windows), copied hash-verified, extracted over an emptied destination and
+    # checked by file count. Directories named in -Exclude are left out wherever
+    # they are. Any failure throws. Returns the copy record.
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [System.Management.Automation.Runspaces.PSSession] $Session,
+        [Parameter(Mandatory)] [string] $Path,
+        [Parameter(Mandatory)] [string] $Destination,
+        [string[]] $Exclude = @()
+    )
+    if (-not (Test-Path -LiteralPath $Path -PathType Container)) { throw "Handover source missing: $Path" }
+    $root  = (Get-Item -LiteralPath $Path -Force).FullName
+    $stage = Join-Path ([IO.Path]::GetTempPath()) "midcoast-handover-$([guid]::NewGuid())"
+    $zip   = "$stage.zip"
+    try {
+        $files = 0
+        $queue = [Collections.Generic.Queue[string]]::new()
+        $queue.Enqueue($root)
+        while ($queue.Count) {
+            $dir = $queue.Dequeue()
+            $rel = [IO.Path]::GetRelativePath($root, $dir)
+            $target = if ($rel -eq '.') { $stage } else { Join-Path $stage $rel }
+            New-Item -ItemType Directory -Path $target -Force | Out-Null
+            foreach ($item in @(Get-ChildItem -LiteralPath $dir -Force -ErrorAction Stop)) {
+                if ($item.PSIsContainer) {
+                    if ($Exclude -notcontains $item.Name) { $queue.Enqueue($item.FullName) }
+                    continue
+                }
+                Copy-LabSharedFile -Path $item.FullName -Destination (Join-Path $target $item.Name)
+                $files++
+            }
+        }
+        Add-Type -AssemblyName System.IO.Compression.FileSystem
+        [System.IO.Compression.ZipFile]::CreateFromDirectory($stage, $zip)
+        $remoteZip = Join-Path (Split-Path $Destination -Parent) "handover-$(Split-Path $Destination -Leaf).zip"
+        $record = Copy-LabFileToSession -Session $Session -Path $zip -Destination $remoteZip
+        $arrived = Invoke-Command -Session $Session -ArgumentList $remoteZip, $Destination -ScriptBlock {
+            param($Zip, $Dest)
+            $ErrorActionPreference = 'Stop'
+            try {
+                if (Test-Path -LiteralPath $Dest) { Remove-Item -LiteralPath $Dest -Recurse -Force }
+                Add-Type -AssemblyName System.IO.Compression.FileSystem
+                [System.IO.Compression.ZipFile]::ExtractToDirectory($Zip, $Dest)
+                @(Get-ChildItem -LiteralPath $Dest -Recurse -Force -File).Count
+            } finally { Remove-Item -LiteralPath $Zip -Force -ErrorAction SilentlyContinue }
+        }
+        if ($arrived -ne $files) { throw "Handover of $Path incomplete: $files files sent, $arrived arrived in $Destination." }
+        [pscustomobject]@{ Path = $Path; Destination = $Destination; Sha256 = $record.Sha256; Files = $files }
+    } finally {
+        Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $zip -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Get-LabCertRunsPath {
+    # Where CERT on this MGMT keeps its runs, as CERT itself reads it: runs_path
+    # from cert.config.yaml, else from cert.config.example.yaml, else CERT's
+    # default; a relative path is under the CERT folder.
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] [string] $CertPath)
+    $p = $null
+    foreach ($f in 'cert.config.yaml', 'cert.config.example.yaml') {
+        $file = Join-Path $CertPath $f
+        if ($p -or -not (Test-Path -LiteralPath $file)) { continue }
+        try { $cfg = Get-Content -LiteralPath $file -Raw | ConvertFrom-Yaml }
+        catch { throw "Can't read CERT's $file`: $($_.Exception.Message)" }
+        if ($cfg -is [System.Collections.IDictionary] -and $cfg['runs_path']) { $p = [string] $cfg['runs_path'] }
+    }
+    if (-not $p) { $p = 'C:\MidCoastLab\cert-runs' }
+    if (-not [IO.Path]::IsPathRooted($p)) { $p = Join-Path $CertPath $p }
+    [IO.Path]::GetFullPath($p).TrimEnd('\', '/')
+}
+
+function Test-LabPathUnder {
+    # True when $Path is $Parent or inside it (case-insensitive, as on Windows).
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] [string] $Path, [Parameter(Mandatory)] [string] $Parent)
+    $a = [IO.Path]::GetFullPath($Path).TrimEnd('\', '/')
+    $b = [IO.Path]::GetFullPath($Parent).TrimEnd('\', '/')
+    $a -eq $b -or $a.StartsWith($b + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)
+}
+
+function Get-LabCertHandover {
+    # What of CERT this MGMT hands over: the CERT folder (if installed), its runs
+    # folder (if it exists), whether the runs are inside the CERT folder, and
+    # each run folder's DACL. A run folder is limited to the account that ran
+    # CERT (it holds the engagement password); the handover puts that DACL back
+    # on the new MGMT. Throws when a run folder can't be read by this account,
+    # or when a CERT path would overlap the lab's own handover.
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] $Inventory)
+    $h = (Get-LabMgmtDefinition -Inventory $Inventory).handover
+    $certPath = [IO.Path]::GetFullPath($h.cert_path).TrimEnd('\', '/')
+    $runs = Get-LabCertRunsPath -CertPath $certPath
+    $root = Split-Path $h.repo_path -Parent
+    foreach ($p in $certPath, $runs) {
+        foreach ($lab in $h.repo_path, $h.vault_path, $Inventory.terraform.state.path, $h.logs_path) {
+            if ((Test-LabPathUnder -Path $lab -Parent $p) -or (Test-LabPathUnder -Path $p -Parent $lab)) {
+                throw "CERT path $p overlaps $lab, which the handover copies separately. Fix lab.yaml handover.cert_path or CERT's runs_path."
+            }
+        }
+        if ((Test-LabPathUnder -Path $root -Parent $p)) { throw "CERT path $p contains $root. Fix lab.yaml handover.cert_path or CERT's runs_path." }
+    }
+    $me = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+    $acl = [ordered]@{}
+    if (Test-Path -LiteralPath $runs -PathType Container) {
+        foreach ($d in @(Get-ChildItem -LiteralPath $runs -Directory -Force -ErrorAction Stop)) {
+            try {
+                $acl[$d.Name] = (Get-Acl -LiteralPath $d.FullName).GetSecurityDescriptorSddlForm('Access')
+                foreach ($f in @(Get-ChildItem -LiteralPath $d.FullName -Recurse -Force -File -ErrorAction Stop)) {
+                    [IO.File]::Open($f.FullName, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare] 'ReadWrite, Delete').Dispose()
+                }
+            } catch {
+                $owner = try { (Get-Acl -LiteralPath $d.FullName).Owner } catch { '(unknown: its ACL is unreadable too)' }
+                throw "CERT run folder $($d.FullName) can't be read by $me (owner: $owner): $($_.Exception.Message) Run Prepare as the account that ran CERT, or give $me read access to the folder first."
+            }
+        }
+    }
+    [pscustomobject]@{
+        CertPath   = $certPath
+        Installed  = Test-Path -LiteralPath $certPath -PathType Container
+        RunsPath   = $runs
+        RunsExist  = Test-Path -LiteralPath $runs -PathType Container
+        RunsInside = Test-LabPathUnder -Path $runs -Parent $certPath
+        RunAcl     = $acl
+    }
+}
+
 function Send-LabHandover {
-    # Copies the repo working tree (with .git), Terraform state and the KeePass
-    # vault to the new MGMT, verified by hash, and locks the folder down.
+    # Copies the repo working tree (with .git), Terraform state, the KeePass
+    # vault, CERT (if installed: its folder, config, module sources and runs)
+    # and the pipeline's logs to the new MGMT, each verified, and locks the
+    # folder down. Any failure throws, and Prepare rolls the handover back.
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)] $Inventory,
@@ -1237,35 +1385,11 @@ function Send-LabHandover {
     $h = (Get-LabMgmtDefinition -Inventory $Inventory).handover
     $repo = Get-LabRepoRoot
     $copied = @()
+    # Read before anything is copied: a CERT run folder this account can't read stops it here.
+    $cert = Get-LabCertHandover -Inventory $Inventory
 
-    # Repo: zip it locally, minus provider binaries and caches (re-created by terraform init).
-    $stage = Join-Path ([IO.Path]::GetTempPath()) "midcoast-repo-$([guid]::NewGuid())"
-    $zip   = "$stage.zip"
-    try {
-        $exclude = @('.terraform', 'packer_cache')
-        New-Item -ItemType Directory -Path $stage -Force | Out-Null
-        Get-ChildItem -Path $repo -Force | Where-Object { $exclude -notcontains $_.Name } |
-            Copy-Item -Destination $stage -Recurse -Force
-        Get-ChildItem -Path $stage -Recurse -Force -Directory | Where-Object { $exclude -contains $_.Name } |
-            Remove-Item -Recurse -Force
-        # ZipFile, not Compress-Archive: Compress-Archive skips hidden items,
-        # and .git is hidden on Windows.
-        Add-Type -AssemblyName System.IO.Compression.FileSystem
-        [System.IO.Compression.ZipFile]::CreateFromDirectory($stage, $zip)
-        $remoteZip = Join-Path (Split-Path $h.repo_path -Parent) 'handover-repo.zip'
-        $copied += Copy-LabFileToSession -Session $Session -Path $zip -Destination $remoteZip
-        Invoke-Command -Session $Session -ArgumentList $remoteZip, $h.repo_path -ScriptBlock {
-            param($Zip, $Dest)
-            $ErrorActionPreference = 'Stop'
-            if (Test-Path $Dest) { Remove-Item -Path $Dest -Recurse -Force }
-            Add-Type -AssemblyName System.IO.Compression.FileSystem
-            [System.IO.Compression.ZipFile]::ExtractToDirectory($Zip, $Dest)
-            Remove-Item -Path $Zip -Force
-        }
-    } finally {
-        Remove-Item -Path $stage -Recurse -Force -ErrorAction SilentlyContinue
-        Remove-Item -Path $zip -Force -ErrorAction SilentlyContinue
-    }
+    # Repo, minus provider binaries and caches (re-created by terraform init).
+    $copied += Send-LabFolder -Session $Session -Path $repo -Destination $h.repo_path -Exclude '.terraform', 'packer_cache'
 
     # The repo must arrive with its history and its ledger.
     $check = Invoke-Command -Session $Session -ArgumentList $h.repo_path -ScriptBlock {
@@ -1285,6 +1409,40 @@ function Send-LabHandover {
     # KeePass vault.
     $copied += Copy-LabFileToSession -Session $Session -Path $h.vault_path -Destination $h.vault_path
 
+    # CERT: the same folder at the same path, .git, cert.config.yaml, sources\
+    # and module-state.json included, so the new MGMT runs the same version with
+    # the same config and modules. Runs inside the CERT folder come with it;
+    # runs elsewhere (CERT's default, C:\MidCoastLab\cert-runs) are copied to
+    # the same path.
+    if ($cert.Installed) {
+        $copied += Send-LabFolder -Session $Session -Path $cert.CertPath -Destination $cert.CertPath
+        $ok = Invoke-Command -Session $Session -ArgumentList $cert.CertPath -ScriptBlock {
+            param($Dest)
+            (Test-Path (Join-Path $Dest 'Start-Cert.ps1')) -and (Test-Path (Join-Path $Dest '.git\HEAD'))
+        }
+        if (-not $ok) { throw "CERT handover incomplete: Start-Cert.ps1 or .git\HEAD missing in $($cert.CertPath) on the new MGMT." }
+    }
+    if ($cert.RunsExist -and -not $cert.RunsInside) {
+        $copied += Send-LabFolder -Session $Session -Path $cert.RunsPath -Destination $cert.RunsPath
+    }
+    if (-not $cert.Installed -and -not $cert.RunsExist) { Write-Host '   CERT: not installed, nothing to copy' }
+
+    # Pipeline logs, last so they hold as much of this Prepare's transcript as
+    # possible: under Previous\<this MGMT>, so they don't overwrite the new
+    # MGMT's own (Validation\latest.json, its bootstrap logs). What this MGMT
+    # inherited from earlier rotations goes to Previous\ as it is, so history
+    # doesn't nest a level deeper on every rotation. Retention (90 days) ages
+    # them as on any MGMT; extraction keeps their timestamps.
+    $logs = $h.logs_path
+    if (Test-Path -LiteralPath $logs -PathType Container) {
+        $previous = Join-Path $logs 'Previous'
+        $copied += Send-LabFolder -Session $Session -Path $logs -Destination (Join-Path $previous $env:COMPUTERNAME) -Exclude 'Previous'
+        foreach ($p in @(Get-ChildItem -LiteralPath $previous -Directory -Force -ErrorAction SilentlyContinue)) {
+            if ($p.Name -eq $env:COMPUTERNAME) { continue }
+            $copied += Send-LabFolder -Session $Session -Path $p.FullName -Destination (Join-Path $previous $p.Name)
+        }
+    }
+
     # The same post-copy rules as MGMT-00 gets after its domain join
     # (Join-LabDomain.ps1), from the same Lab.System functions, run on the new
     # MGMT from the platform its bootstrap received: git may use the repo under
@@ -1301,6 +1459,36 @@ function Send-LabHandover {
         Set-LabGitRepoConfig -Path $Repo
         Set-LabMgmtFolderAcl -Group $Group -Root $Root -ProbePath (Join-Path $Repo 'inventory\lab.yaml')
     } | ForEach-Object { Write-Host "   $_" }
+
+    # CERT run folders: the lockdown above reset them to inherit C:\MidCoastLab's
+    # ACL (and runs outside it inherit their new parent's). Put back each one's
+    # own DACL (the account that ran CERT, and SYSTEM), let it propagate to the
+    # files, and check that nothing in them grants the Tier 0 group.
+    if ($cert.RunAcl.Count -gt 0) {
+        # Windows PowerShell 5.1 on the far side: a DirectorySecurity holding only
+        # the DACL, so only the DACL (and its protection) is written, not the owner.
+        $names = @($cert.RunAcl.Keys)
+        $sddls = @($cert.RunAcl.Values)
+        Invoke-Command -Session $Session -ArgumentList $cert.RunsPath, $names, $sddls, $adminGroup -ScriptBlock {
+            param($Runs, $Names, $Sddls, $Group)
+            $ErrorActionPreference = 'Stop'
+            $sid = ([Security.Principal.NTAccount] $Group).Translate([Security.Principal.SecurityIdentifier]).Value
+            for ($i = 0; $i -lt @($Names).Count; $i++) {
+                $dir = Join-Path $Runs @($Names)[$i]
+                if (-not (Test-Path -LiteralPath $dir -PathType Container)) { throw "CERT run folder $dir missing after the copy." }
+                $sec = New-Object System.Security.AccessControl.DirectorySecurity
+                $sec.SetSecurityDescriptorSddlForm(@($Sddls)[$i], [Security.AccessControl.AccessControlSections]::Access)
+                [IO.Directory]::SetAccessControl($dir, $sec)
+                foreach ($item in @(Get-Item -LiteralPath $dir -Force) + @(Get-ChildItem -LiteralPath $dir -Recurse -Force)) {
+                    $grants = @((Get-Acl -LiteralPath $item.FullName).Access | ForEach-Object {
+                        try { $_.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value } catch { $null } })
+                    if ($grants -contains $sid) { throw "CERT run folder ACL not restored: $($item.FullName) still grants $Group." }
+                }
+            }
+            "CERT runs: $(@($Names).Count) run folder(s) restricted again to the account that ran them, and SYSTEM"
+        } | ForEach-Object { Write-Host "   $_" }
+    }
+
     # Last step: the marker Complete requires. Its absence means the copy is partial.
     $marker = Join-Path (Split-Path $h.repo_path -Parent) 'HANDOVER.complete'
     Invoke-Command -Session $Session -ArgumentList $marker, $env:COMPUTERNAME, ($copied | ConvertTo-Json -Depth 3) -ScriptBlock {
@@ -1312,7 +1500,8 @@ function Send-LabHandover {
 }
 
 function Clear-LabHandoverTarget {
-    # Removes partial handover copies from the new MGMT after a failed handover.
+    # Removes partial handover copies from the new MGMT after a failed handover:
+    # everything Send-LabHandover may have written there, and any zip left over.
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)] $Inventory,
@@ -1321,10 +1510,19 @@ function Clear-LabHandoverTarget {
     $h = (Get-LabMgmtDefinition -Inventory $Inventory).handover
     $state = $Inventory.terraform.state.path
     $root = Split-Path $h.repo_path -Parent
-    Invoke-Command -Session $Session -ArgumentList $h.repo_path, $h.vault_path, $state, (Join-Path $root 'HANDOVER.complete'), (Join-Path $root 'handover-repo.zip') -ScriptBlock {
-        param($Repo, $Vault, $State, $Marker, $Zip)
-        foreach ($p in $Marker, $Vault, $State, "$State.backup", $Zip) { Remove-Item -Path $p -Force -ErrorAction SilentlyContinue }
-        if (Test-Path $Repo) { Remove-Item -Path $Repo -Recurse -Force -ErrorAction SilentlyContinue }
+    $runs = try { Get-LabCertRunsPath -CertPath $h.cert_path } catch { $null }
+    $folders = @($h.repo_path, $h.cert_path, (Join-Path $h.logs_path 'Previous'))
+    $files = @((Join-Path $root 'HANDOVER.complete'), $h.vault_path, $state, "$state.backup")
+    $zipDirs = @($root)
+    if ($runs -and -not (Test-LabPathUnder -Path $runs -Parent $h.cert_path)) {
+        $folders += $runs
+        $zipDirs += Split-Path $runs -Parent
+    }
+    Invoke-Command -Session $Session -ArgumentList $folders, $files, $zipDirs -ScriptBlock {
+        param($Folders, $Files, $ZipDirs)
+        foreach ($p in $Files) { Remove-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue }
+        foreach ($d in $ZipDirs) { Get-ChildItem -Path (Join-Path $d 'handover-*.zip') -Force -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue }
+        foreach ($p in $Folders) { if (Test-Path -LiteralPath $p) { Remove-Item -LiteralPath $p -Recurse -Force -ErrorAction SilentlyContinue } }
     }
 }
 
@@ -1432,4 +1630,4 @@ Export-ModuleMember -Function Get-LabRepoRoot, Get-LabInventoryPath, Get-LabSite
     Get-LabMgmtDefinition, Get-LabHandoverLock, Get-LabCertLock, Assert-LabNotHandedOver, Assert-LabSafePlan,
     Register-LabInitialInstances, Remove-LabInstance, ConvertFrom-LabPlanJson, Get-LabPveToken, Stop-LabPveVm, Remove-LabPveVm,
     Deploy-LabInstance, New-LabMetadata, Get-LabGuestCredentials, Add-LabTailscaleSecret, Disconnect-LabGuestTailscale,
-    Copy-LabFileToSession, Send-LabHandover, Clear-LabHandoverTarget, Test-LabHandoverComplete, Set-LabHandoverLock, Remove-LabHandoverLock, Remove-LabComputerRecords
+    Copy-LabFileToSession, Send-LabFolder, Get-LabCertRunsPath, Get-LabCertHandover, Send-LabHandover, Clear-LabHandoverTarget, Test-LabHandoverComplete, Set-LabHandoverLock, Remove-LabHandoverLock, Remove-LabComputerRecords

@@ -314,6 +314,15 @@ state, the vault. It can't destroy itself and start over, so the old MGMT builds
 one and hands over (Prepare), and the new one retires the old (Complete). Abort works
 until the old VM is destroyed.
 
+**What goes over.** Besides the pipeline's state, the handover copies CERT (if installed)
+and the pipeline's logs: Complete destroys the old VM, and with it anything left behind
+(issue #29). CERT is copied as a folder rather than cloned again, so the new MGMT keeps
+its version, `cert.config.yaml` and module sources. Its run folders keep their own ACL
+(only the account that ran CERT, and SYSTEM: they hold engagement passwords), which the
+`C:\MidCoastLab` lockdown would otherwise reset. Old logs go under `Logs\Previous\<old MGMT>`
+so two machines' logs don't mix and the new MGMT's `Validation\latest.json` stays its own.
+A failed copy of either stops the handover, like the rest of it.
+
 **Why a slot pool.** Every guest's WinRM firewall is baked in at template build time with
 the MGMT addresses it trusts. A single address would lock a replacement out of every
 existing machine, so the templates trust both MGMT slot addresses.

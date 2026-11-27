@@ -15,7 +15,7 @@
 
 version: "1.8"                                   # CHANGED: 1.7 -> 1.8 (Tailscale per role: MGMT only)
                                                  # Compatibility number; changes rarely (see CHANGELOG.md).
-release: LAB-261127-01                           # ADDED: release name, LAB-<YYMMDD>-<NN>; every merged change gets a new one
+release: LAB-261127-02                           # ADDED: release name, LAB-<YYMMDD>-<NN>; every merged change gets a new one
 
 environment:
   name: MidCoast-Lab
@@ -302,6 +302,16 @@ servers:
       # active it writes this file; the pipeline refuses to change the lab until
       # the scenario is rolled back or closed.
       cert_lock_path: C:\MidCoastLab\CERT.lock
+      # ADDED (1.8): where CERT is installed (its README's default). If it exists,
+      # the handover copies the folder as it is (same version, config and module
+      # sources) and CERT's runs folder (runs_path in its config), each run
+      # folder still limited to the account that ran it. A failed copy stops
+      # the handover (issue #29).
+      cert_path: C:\MidCoastLab\cert
+      # ADDED (1.8): the pipeline's log root. The handover copies it to
+      # <logs_path>\Previous\<old MGMT> on the new MGMT; logs the old one
+      # inherited go to Previous\ as they are. Normal 90-day retention applies.
+      logs_path: C:\ProgramData\MidCoastLab\Logs
 
   - role: W11
 
