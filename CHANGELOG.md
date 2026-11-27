@@ -18,6 +18,40 @@ Two numbers, in `inventory/lab.yaml`:
 Every release section starts with what it needs: *nothing*, *rebuild templates*, *rotate
 DCs / MGMT*, or *site.yaml change*. Details and reasons: [docs/decisions.md](docs/decisions.md).
 
+## LAB-261127-02 (compatibility 1.8): MGMT rotation keeps CERT and the logs
+
+Needs: nothing. The next MGMT rotation (`Invoke-LabMgmtRotation.ps1 -Stage Prepare`)
+does it (issue #29).
+
+Fixed:
+- **A MGMT rotation lost CERT, its run history and the pipeline's logs.** The handover
+  copied only the repo, the Terraform state and the vault; Complete then destroyed the
+  rest with the old VM.
+
+Changed:
+- **The handover reinstalls CERT on the new MGMT** by copying the old MGMT's CERT folder
+  (`lab.yaml` `handover.cert_path`, `C:\MidCoastLab\cert`) as it is: `.git`,
+  `cert.config.yaml`, module sources and module state, so the same version, config and
+  modules. Its runs folder (`runs_path` in CERT's config, by default
+  `C:\MidCoastLab\cert-runs`) comes too, to the same path. Each run folder keeps its own
+  ACL (the account that ran CERT, and SYSTEM): the handover records it, puts it back after
+  locking down `C:\MidCoastLab`, and checks nothing in it grants the Tier 0 group. With no
+  CERT installed it prints `CERT: not installed, nothing to copy`.
+- **The handover copies the pipeline's logs** (`handover.logs_path`,
+  `C:\ProgramData\MidCoastLab\Logs`, this Prepare's own transcript included) to
+  `Logs\Previous\<old MGMT>` on the new MGMT, so they don't overwrite its own; logs the
+  old MGMT inherited from earlier rotations go to `Previous\` as they are. They follow the
+  usual 90-day retention.
+- **A failed CERT or log copy stops the handover**, like any other handover copy: partial
+  copies are removed, the ledger restored and the old MGMT stays active. That includes a
+  CERT run folder the account running Prepare can't read: run Prepare as the account that
+  ran CERT.
+- Folders now go over as one zip each (the repo too), staged with files opened for shared
+  reading so open logs can be copied, and checked by file count after extraction.
+  Abort's cleanup removes everything the handover wrote.
+- `lab.yaml` `handover` has two new keys, `cert_path` and `logs_path`;
+  `Test-LabInventory` requires them.
+
 ## LAB-261127-01 (compatibility 1.8): DNS clients use every DC slot
 
 Needs: one line on an existing MGMT (below), or nothing until its next rotation. DCs need

@@ -137,7 +137,11 @@ Prepare   run on the CURRENT MGMT
   4. terraform apply: clones it.
   5. Bootstraps it (toolchain, Remote Desktop, domain join, LAPS) and gates on validation.
   6. Hands over: ledger (new = active, old = retiring), the repo with git history,
-     Terraform state and the KeePass vault, each copied and hash-verified.
+     Terraform state and the KeePass vault, each copied and hash-verified; CERT,
+     if installed (same folder, version and config), with its runs, each run
+     folder still limited to the account that ran it; and the pipeline's logs,
+     under Logs\Previous\<this MGMT>. Any failed copy stops the handover and
+     rolls it back: this MGMT stays active.
   7. Locks this MGMT: from now on it refuses every pipeline action except Abort.
 
 Complete  run on the NEW MGMT (sign in as your -a account over Remote Desktop)

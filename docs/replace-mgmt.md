@@ -37,7 +37,19 @@ installs the same toolchain as the hand-build, turns on Remote Desktop (lab subn
 Administrator. Prepare stops on any Critical result from its validation (`MGMT-001…007`:
 toolchain, RSAT, modules, domain trust, WinRM reach to every DC, Proxmox API, Remote
 Desktop; RSAT is High, so only reported), then hands over the
-repo (with git history), Terraform state and KeePass vault, each hash-verified.
+repo (with git history), Terraform state and KeePass vault, each hash-verified, and:
+- **CERT**, if installed (`handover.cert_path`, `C:\MidCoastLab\cert`): the same folder,
+  so the same version, `cert.config.yaml` and module sources, and its runs folder
+  (`runs_path` in CERT's config). Each run folder stays limited to the account that ran
+  CERT, as on the old MGMT. Run Prepare as that account: a run folder Prepare can't read
+  stops the handover. Finish or revert any open run first (Prepare refuses otherwise).
+- **The pipeline's logs** (`handover.logs_path`, `C:\ProgramData\MidCoastLab\Logs`), under
+  `Logs\Previous\<old MGMT>` on the new one, so they don't mix with its own. Logs the old
+  MGMT inherited from earlier rotations stay in `Previous\` beside them. They age out after
+  90 days like any log.
+
+If any copy fails, the handover stops and rolls back: partial copies are removed and the
+old MGMT stays active.
 Last, it locks the old MGMT: every pipeline script on it refuses to run, except Abort.
 
 Prepare ends by printing the next steps; they are the same as below.
