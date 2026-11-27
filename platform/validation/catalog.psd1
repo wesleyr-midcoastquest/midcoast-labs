@@ -61,7 +61,7 @@
     'MGMT-002'   = @{ Name = 'RSAT (AD, DNS, Group Policy) installed';  Category = 'MGMT'; Severity = 'High';     Recovery = 'RerunBootstrap' }
     'MGMT-003'   = @{ Name = 'PowerShell modules (yaml, SecretManagement, KeePass)'; Category = 'MGMT'; Severity = 'Critical'; Recovery = 'RerunBootstrap' }
     'MGMT-004'   = @{ Name = 'Joined to the domain, secure channel healthy'; Category = 'MGMT'; Severity = 'Critical'; Recovery = 'RerunBootstrap' }
-    'MGMT-005'   = @{ Name = 'WinRM/HTTPS reaches every active DC';    Category = 'MGMT'; Severity = 'Critical'; Recovery = 'Review' }
+    'MGMT-005'   = @{ Name = 'WinRM/HTTPS reaches the DCs (two of the three DC slots)'; Category = 'MGMT'; Severity = 'Critical'; Recovery = 'Review' }
     'MGMT-006'   = @{ Name = 'Proxmox API reachable';                  Category = 'MGMT'; Severity = 'Critical'; Recovery = 'Review' }
     'MGMT-007'   = @{ Name = 'Remote Desktop on, listening, open to the lab subnet'; Category = 'MGMT'; Severity = 'Critical'; Recovery = 'RerunBootstrap' }
 

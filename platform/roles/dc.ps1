@@ -134,11 +134,14 @@ switch ($Stage) {
 
     'PostPromote' {
         Wait-LabADReady
-        # Partners first, loopback last (never loopback alone on a replica).
-        $partners = @($Metadata.dns_servers | Where-Object { $_ -ne $Metadata.ipv4 })
-        Set-LabDnsClient -Servers (@($partners) + '127.0.0.1')
+        # Partners first, loopback last (never loopback alone on a replica). The
+        # partners are the other DC slots, not the DCs active today (metadata
+        # dns_servers, used to find the domain while promoting), so a later DC
+        # rotation doesn't have to change this list (issue #27).
+        $servers = @(Get-LabDnsClientServers -Inventory $Inventory -Role 'DC' -IPv4 $Metadata.ipv4)
+        Set-LabDnsClient -Servers $servers
         Set-LabTimeSource -Inventory $Inventory
-        Write-LabLog "Replica DC ready; DNS client: $((@($partners) + '127.0.0.1') -join ', ')"
+        Write-LabLog "Replica DC ready; DNS client: $($servers -join ', ')"
         return (Step 'Finalize')
     }
 

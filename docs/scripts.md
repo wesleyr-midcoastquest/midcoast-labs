@@ -76,8 +76,9 @@ Replaces a domain controller with a fresh one from the current WIN2022 template,
 
 Runs: PowerShell 7.
 
-Run on the active MGMT, in an elevated PowerShell 7 window (the last step of
-Add points this machine's own DNS client at the new set of DCs).
+Run on the active MGMT, in PowerShell 7 (it needn't be elevated: since
+LAB-261127-01 machines that aren't DCs use every DC slot address for DNS,
+so the rotation doesn't change this machine).
 
 Add      builds the replacement and moves everything onto it:
   1. Pre-flight: inventory, site, both DCs pass validation, a free DC slot,
@@ -88,8 +89,9 @@ Add      builds the replacement and moves everything onto it:
      and is gated on its own validation (ledger: active).
   4. Moves every FSMO role the old DC holds to the new one (and with the PDC
      emulator, the external time source).
-  5. Marks the old DC retiring and points every DNS client in the lab (DCs,
-     every other lab machine, this MGMT) at the new set of DCs.
+  5. Marks the old DC retiring and makes sure each DC's DNS client has its
+     fixed list (the other DC slots, then loopback; only DCs built before
+     LAB-261127-01 change). Other lab machines already use every DC slot.
   6. Re-validates the active DCs.
   The old DC keeps running as a third DC until Retire. Check anything you
   like in between; nothing depends on it any more.
@@ -100,7 +102,7 @@ Retire   removes the old DC: logs it out of the tailnet if it has
          VM and drops it from the ledger.
 
 Abort    (before Retire) undoes Add: the old DC becomes active again, FSMO
-         and DNS clients move back, and the replacement is demoted and
+         moves back, and the replacement is demoted and
          destroyed, the same way Retire removes a DC.
 
 Every stage can be re-run after a failure; it picks up where it stopped.
@@ -409,8 +411,9 @@ Joins the hand-built MGMT-00 to the lab domain and applies everything a pipeline
 Runs: elevated, PowerShell 7.
 
 Run once on MGMT-00, in an ELEVATED PowerShell 7 window, after Phase 1.
-1. Points this machine's DNS client at the active DCs (from the ledger) and
-   waits until the domain answers.
+1. Points this machine's DNS client at the DC pool's three slot addresses
+   (slot order; fixed, so DC rotations never change it) and waits until the
+   domain answers.
 2. Joins the domain into the MGMT placement OU (Admin/Tier0/Devices) with
    svc-domainjoin, whose password comes from the vault.
 3. Registers a one-shot task that runs as SYSTEM at the next start-up and

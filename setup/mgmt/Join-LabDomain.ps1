@@ -7,8 +7,9 @@
 
 .DESCRIPTION
     Run once on MGMT-00, in an ELEVATED PowerShell 7 window, after Phase 1.
-    1. Points this machine's DNS client at the active DCs (from the ledger) and
-       waits until the domain answers.
+    1. Points this machine's DNS client at the DC pool's three slot addresses
+       (slot order; fixed, so DC rotations never change it) and waits until the
+       domain answers.
     2. Joins the domain into the MGMT placement OU (Admin/Tier0/Devices) with
        svc-domainjoin, whose password comes from the vault.
     3. Registers a one-shot task that runs as SYSTEM at the next start-up and
@@ -56,7 +57,9 @@ $adminAcct = "$($admin.username)$($inv.identity.administrative_model.account_suf
 
 $dcs = @(Get-LabActiveDCs -Instances @(Get-LabInstances -Path (Get-LabLedgerPath)))
 if ($dcs.Count -eq 0) { throw 'The ledger has no active DC. Run Phase 1 first (runbook step 7).' }
-$dcIps = @($dcs | ForEach-Object ipv4)
+# Every DC slot, not just the active DCs: the list never changes, so a DC rotation
+# has nothing to update on this machine (issue #27).
+$dnsIps = @(Get-LabDnsClientServers -Inventory $inv -Role 'MGMT')
 
 $cs = Get-CimInstance -ClassName Win32_ComputerSystem
 $joined = $cs.PartOfDomain -and $cs.Domain -eq $ad.domain
@@ -76,9 +79,9 @@ If you're locked out anyway, the VM's console in the Proxmox UI still works.
 
     # ── 1. DNS at the DCs ─────────────────────────────────────────────────
     $route = Get-NetRoute -DestinationPrefix '0.0.0.0/0' -ErrorAction Stop | Sort-Object RouteMetric | Select-Object -First 1
-    Set-DnsClientServerAddress -InterfaceIndex $route.ifIndex -ServerAddresses $dcIps
+    Set-DnsClientServerAddress -InterfaceIndex $route.ifIndex -ServerAddresses $dnsIps
     Clear-DnsClientCache
-    Write-Host "DNS client -> $($dcIps -join ', ')"
+    Write-Host "DNS client -> $($dnsIps -join ', ')"
     Wait-LabCondition -Description "domain $($ad.domain) answers" -TimeoutSeconds 300 -IntervalSeconds 10 -Condition {
         [bool] (Resolve-DnsName -Name "_ldap._tcp.dc._msdcs.$($ad.domain)" -Type SRV -DnsOnly -ErrorAction Stop)
     }
