@@ -23,7 +23,8 @@
       The old DC keeps running as a third DC until Retire. Check anything you
       like in between; nothing depends on it any more.
 
-    Retire   removes the old DC: moves any FSMO role still on it, demotes it,
+    Retire   removes the old DC: logs it out of the tailnet if it has
+             Tailscale (DCs built before 1.8), moves any FSMO role still on it, demotes it,
              removes its leftover DNS records and computer object, destroys the
              VM and drops it from the ledger.
 
@@ -224,6 +225,15 @@ function Remove-RotationDc {
     $keeper = $Keepers[0]
     Write-Host "`n-- Removing $($Target.name) (VMID $($Target.vmid), $($Target.ipv4))" -ForegroundColor Cyan
 
+    # 0. Out of the tailnet (best-effort; DCs built before 1.8 have Tailscale), FIRST:
+    #    after the demotion below (-NoRebootOnCompletion), until it restarts, the
+    #    machine accepts neither the domain accounts nor the new local Administrator
+    #    password, so a logout after it is refused and leaves the device behind.
+    #    MGMT reaches the DC over the lab network, so nothing here needs the tailnet;
+    #    the AuthKey policy and watchdog are removed first, so it doesn't log back in.
+    $ts = Disconnect-LabGuestTailscale -Inventory $inv -Instance $Target -Credential @($cred.DomainAdmin, $cred.LocalAdmin, $cred.LocalAdmin2)
+    if ($ts) { Write-Host "   $ts" }
+
     $isDc = Test-IsDc -Name $Target.name -Via $keeper
     if ($isDc) {
         # 1. FSMO off it (normally done by Add already).
@@ -270,9 +280,7 @@ function Remove-RotationDc {
         Write-Host '   not a domain controller (already demoted, or never promoted)'
     }
 
-    # 3. Out of the tailnet (best-effort), then power off; nothing should talk to it any more.
-    $ts = Disconnect-LabGuestTailscale -Inventory $inv -Instance $Target -Credential @($cred.DomainAdmin, $cred.LocalAdmin, $cred.LocalAdmin2)
-    if ($ts) { Write-Host "   $ts" }
+    # 3. Power off (it left the tailnet in step 0); nothing should talk to it any more.
     if (Test-LabPveVm -Inventory $inv -Token $pveTok -VmId ([int] $Target.vmid)) {
         Stop-LabPveVm -Inventory $inv -Token $pveTok -VmId ([int] $Target.vmid)
         Write-Host '   shut down'
@@ -392,7 +400,7 @@ try {
             $tf = (Invoke-LabTerraform -Inventory $inv -Command output).servers.value
 
             Write-Host "`n-- $($new.name) (replica of $($source.name))" -ForegroundColor Cyan
-            $secrets = Add-LabTailscaleSecret -Inventory $inv -Secrets @{
+            $secrets = Add-LabTailscaleSecret -Inventory $inv -Role 'DC' -Secrets @{
                 $inv.secrets.entries.dsrm = Get-LabSecretText -Inventory $inv -Name $inv.secrets.entries.dsrm
                 'svc-labdeploy'           = Get-LabSecretText -Inventory $inv -Name 'svc-labdeploy'
             }

@@ -18,7 +18,7 @@ The scripts' comment-based help is the source of this page; `./tools/New-LabScri
 | `setup/mgmt/Initialize-LabVault.ps1` | Creates the KeePass vault if needed, registers it for your account, and fills in every secret the inventory names (runbook step 6; again for each new account or MGMT). | PowerShell 7 |
 | `setup/mgmt/Install-MgmtTools.ps1` | Installs the MGMT toolchain on the hand-built MGMT-00 (runbook step 5). | elevated |
 | `setup/mgmt/Join-LabDomain.ps1` | Joins the hand-built MGMT-00 to the lab domain and applies everything a pipeline-built MGMT gets after its join (runbook step 8). | elevated, PowerShell 7 |
-| `setup/mgmt/Join-LabTailnet.ps1` | Puts the hand-built MGMT-00 on the site's tailnet the way every lab machine is (site.yaml tailscale.enabled), with the reusable key from the vault (runbook step 6). | elevated, PowerShell 7 |
+| `setup/mgmt/Join-LabTailnet.ps1` | Puts the hand-built MGMT-00 on the site's tailnet the way every pipeline-built MGMT is (site.yaml tailscale.enabled), with the reusable key from the vault (runbook step 6). | elevated, PowerShell 7 |
 | `setup/proxmox/proxmox-setup.sh` | one-time Proxmox setup for a MidCoast Lab site. | node, root |
 | `setup/proxmox/proxmox-teardown.sh` | removes a MidCoast Lab site from Proxmox, so it can be built again from scratch. | node, root |
 | `tools/Export-LabRelease.ps1` | Exports a release of the product (no site, no ledger) into a folder, for the public repo. | PowerShell 7 |
@@ -94,7 +94,8 @@ Add      builds the replacement and moves everything onto it:
   The old DC keeps running as a third DC until Retire. Check anything you
   like in between; nothing depends on it any more.
 
-Retire   removes the old DC: moves any FSMO role still on it, demotes it,
+Retire   removes the old DC: logs it out of the tailnet if it has
+         Tailscale (DCs built before 1.8), moves any FSMO role still on it, demotes it,
          removes its leftover DNS records and computer object, destroys the
          VM and drops it from the ledger.
 
@@ -433,13 +434,13 @@ Re-runnable: already joined -> only the post-join task is (re)registered.
 
 ### `setup/mgmt/Join-LabTailnet.ps1`
 
-Puts the hand-built MGMT-00 on the site's tailnet the way every lab machine is (site.yaml tailscale.enabled), with the reusable key from the vault (runbook step 6).
+Puts the hand-built MGMT-00 on the site's tailnet the way every pipeline-built MGMT is (site.yaml tailscale.enabled), with the reusable key from the vault (runbook step 6).
 
 Runs: elevated, PowerShell 7.
 
 Pipeline-built machines join during their bootstrap; MGMT-00 is built before
 the vault exists, so it gets this step here, once, after Initialize-LabVault.
-Same settings as every other lab machine (Lab.System Install-LabTailscale):
+Same settings as every other MGMT (Lab.System Install-LabTailscale):
 --unattended --accept-routes=false --accept-dns=false, the Tailscale adapter
 kept out of DNS, Remote Desktop allowed on that adapter only, the AuthKey
 system policy and the MidCoastLab-Tailscale watchdog task, so a restart or
@@ -648,7 +649,8 @@ metadata.dc_mode decides the path:
 Secrets used (delivered by the orchestrator):
   forest:  domain_administrator, dsrm, every admin and service account
   replica: dsrm, svc-labdeploy
-  both:    the Tailscale auth key, when site.yaml tailscale.enabled
+  (no Tailscale auth key: since 1.8 DCs don't join the tailnet, lab.yaml
+  tailscale: false on the DC role; issue #26)
 
 | Parameter | Required | Default | Meaning |
 |---|---|---|---|
@@ -695,6 +697,7 @@ The hand-built MGMT-00 gets the equivalent of these stages from
 setup/mgmt/Install-MgmtTools.ps1 and setup/mgmt/Join-LabDomain.ps1.
 
 Secrets used: svc-domainjoin; the Tailscale auth key, when site.yaml tailscale.enabled
+(MGMT is the one role with lab.yaml tailscale: true)
 
 | Parameter | Required | Default | Meaning |
 |---|---|---|---|

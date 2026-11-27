@@ -79,7 +79,7 @@ a pool or user that belongs to another site, and a VMID block that overlaps anot
 
 | What | How to choose | `site.yaml` |
 |---|---|---|
-| Whether every lab machine joins your tailnet | Recommended if you use Tailscale for remote access | `tailscale.enabled` |
+| Whether MGMT joins your tailnet (DCs don't, since 1.8) | Recommended if you use Tailscale for remote access | `tailscale.enabled` |
 
 Only the yes/no goes in `site.yaml`. The **auth key** goes in the vault later (the runbook
 asks for it), never in this file. Make it **reusable**, **tagged** (e.g.

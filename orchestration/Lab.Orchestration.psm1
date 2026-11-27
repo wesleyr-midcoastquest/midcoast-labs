@@ -1129,10 +1129,16 @@ function New-LabMetadata {
 
 function Add-LabTailscaleSecret {
     # Adds the Tailscale auth key to a guest's secrets when site.yaml
-    # tailscale.enabled. A missing key is a warning: the guest builds without it.
+    # tailscale.enabled and the guest's role joins the tailnet (lab.yaml
+    # tailscale: true; 1.8: MGMT only). Other roles never get the key.
+    # A missing key is a warning: the guest builds without it.
     [CmdletBinding()]
-    param([Parameter(Mandatory)] $Inventory, [Parameter(Mandatory)] [hashtable] $Secrets)
-    if (-not $Inventory.tailscale.enabled) { return $Secrets }
+    param(
+        [Parameter(Mandatory)] $Inventory,
+        [Parameter(Mandatory)] [string] $Role,
+        [Parameter(Mandatory)] [hashtable] $Secrets
+    )
+    if (-not (Test-LabRoleTailscale -Inventory $Inventory -Role $Role)) { return $Secrets }
     $name = $Inventory.secrets.entries.tailscale_authkey
     try { $Secrets[$name] = Get-LabSecretText -Inventory $Inventory -Name $name }
     catch { Write-Warning "Tailscale is enabled but the vault has no $name; this machine won't join the tailnet. ($($_.Exception.Message))" }
@@ -1142,6 +1148,10 @@ function Add-LabTailscaleSecret {
 function Disconnect-LabGuestTailscale {
     # Logs a machine that's about to be destroyed out of the tailnet, so it
     # doesn't linger in the device list. Best-effort; returns a status line.
+    # Gated on the site switch only, not the role's: a machine built before
+    # 1.8 (every DC) may have Tailscale although its role no longer joins.
+    # A DC must be logged out BEFORE it's demoted: until the reboot that
+    # follows, it accepts neither domain accounts nor the new local password.
     [CmdletBinding()]
     param([Parameter(Mandatory)] $Inventory, [Parameter(Mandatory)] $Instance, [Parameter(Mandatory)] [pscredential[]] $Credential)
     if (-not $Inventory.tailscale.enabled) { return $null }

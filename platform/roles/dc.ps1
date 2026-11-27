@@ -12,7 +12,8 @@
     Secrets used (delivered by the orchestrator):
       forest:  domain_administrator, dsrm, every admin and service account
       replica: dsrm, svc-labdeploy
-      both:    the Tailscale auth key, when site.yaml tailscale.enabled
+      (no Tailscale auth key: since 1.8 DCs don't join the tailnet, lab.yaml
+      tailscale: false on the DC role; issue #26)
 #>
 [CmdletBinding()]
 param(
@@ -157,9 +158,11 @@ switch ($Stage) {
             $ready -and $rf.State -eq 4
         }
         & gpupdate.exe /target:computer /force | Out-Null
+        # The Tailscale step: skipped while lab.yaml has tailscale: false on the
+        # DC role (1.8); kept, with its DNS safeguards, in case that changes.
         Join-LabTailnet -Inventory $Inventory -Metadata $Metadata -Dc
         # Let AD settle before validation. Right after promotion (and after the
-        # DNS/Netlogon restarts of the Tailscale step), replication and Group
+        # DNS/Netlogon restarts of the Tailscale step, if any), replication and Group
         # Policy queries can fail with credential errors for a few minutes; the
         # first real run failed REPL-001 that way and passed on -Retry.
         try {

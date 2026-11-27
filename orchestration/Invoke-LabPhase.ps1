@@ -133,7 +133,7 @@ try {
             } else {
                 $h['svc-labdeploy'] = Get-LabSecretText -Inventory $inv -Name 'svc-labdeploy'
             }
-            Add-LabTailscaleSecret -Inventory $inv -Secrets $h
+            Add-LabTailscaleSecret -Inventory $inv -Role 'DC' -Secrets $h
         }
 
         # ── 3-4. Bootstrap each DC in order ──────────────────────────────────

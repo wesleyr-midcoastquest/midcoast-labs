@@ -554,7 +554,7 @@ try {
     "Remote Desktop on, from $(@($cfg.rdp_from) -join ', ')"
 
     # Tailscale, with the one-time key from the answer CD (never copied to disk).
-    # Same flags as every lab machine; the policy and watchdog come with the
+    # Same flags as every pipeline-built MGMT; the policy and watchdog come with the
     # reusable key in runbook step 6 (Join-LabTailnet.ps1).
     if ($cfg.tailscale_authkey) {
         try {

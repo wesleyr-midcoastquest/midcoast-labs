@@ -18,6 +18,37 @@ Two numbers, in `inventory/lab.yaml`:
 Every release section starts with what it needs: *nothing*, *rebuild templates*, *rotate
 DCs / MGMT*, or *site.yaml change*. Details and reasons: [docs/decisions.md](docs/decisions.md).
 
+## LAB-261127-00 (compatibility 1.8): Tailscale on MGMT only
+
+Needs: rotate DCs (nothing at once: each DC built from this release has no Tailscale, and
+each rotation retires one that has it, logging it out of the tailnet cleanly). MGMT is
+unchanged. No `site.yaml` change: `tailscale.enabled` still switches it for the whole site
+(issue #26).
+
+Changed:
+- **DCs no longer join the tailnet.** Tailscale on a DC was mostly work to keep a second
+  adapter out of AD's DNS, and left a reusable auth key on every DC. `lab.yaml` now says
+  per role who joins: `tailscale: true` on MGMT, `tailscale: false` on DC; a role without
+  the value doesn't join (roles added later opt in the same way). A DC gets no auth key in
+  its build secrets, no install, no AuthKey policy and no watchdog; `TS-001` passes on it
+  as "not used by this role". `Test-LabInventory` checks the value is true or false.
+- **Getting to a DC**: Tailscale to MGMT, then Remote Desktop from MGMT (DCs already allow
+  it from the lab subnet), or the Proxmox console.
+- The DNS safeguards stay for now (`Set-LabDcSingleHomed`, the rotation's Tailscale
+  record cleanup, `DNS-005`): harmless with one adapter, and they still catch leftovers
+  from DCs built before this release. A later release can remove them.
+
+Fixed:
+- **Retiring a DC left its device on the tailnet.** The rotation demotes first, and until
+  the restart after the demotion the machine accepts neither the domain accounts nor the
+  new local Administrator password, so the logout was refused ("couldn't reach ... remove
+  it in the Tailscale admin console"). Retire (and Abort, for the replacement) now logs
+  the DC out before demoting it, while the domain credentials still work; the AuthKey
+  policy and watchdog are removed first, so it doesn't log back in.
+
+To do by hand: remove the devices earlier retirements left behind in the Tailscale admin
+console.
+
 ## LAB-261126-01 (compatibility 1.7): template builds pick an installable PowerShell
 
 Needs: nothing (`git pull`; the next template build uses it).

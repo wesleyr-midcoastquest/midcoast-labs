@@ -79,8 +79,9 @@ function Invoke-LabCommonChecks {
         @{ Passed = ($env:COMPUTERNAME -eq $Metadata.hostname.ToUpper()); Detail = "is $env:COMPUTERNAME, expected $($Metadata.hostname)" }
     }
     $results += Invoke-LabCheck -Id 'TS-001' -Check {
-        # site.yaml tailscale.enabled: joined and connected.
+        # site.yaml tailscale.enabled and the role's lab.yaml tailscale: true: joined and connected.
         if (-not $Inventory.tailscale.enabled) { return @{ Passed = $true; Detail = 'not enabled for this site' } }
+        if (-not (Test-LabRoleTailscale -Inventory $Inventory -Role $Metadata.role)) { return @{ Passed = $true; Detail = "not used by this role ($($Metadata.role))" } }
         $st = Get-LabTailscaleStatus
         if (-not $st) { return @{ Passed = $false; Detail = 'Tailscale not installed, or not answering' } }
         @{ Passed = ($st.BackendState -eq 'Running'); Detail = "state $($st.BackendState); $(@($st.TailscaleIPs) -join ', ')" }

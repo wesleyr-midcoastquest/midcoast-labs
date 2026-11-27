@@ -146,7 +146,7 @@ try {
         $cred = Get-LabGuestCredentials -Inventory $inv
         $creds = @($cred.LocalAdmin, $cred.LocalAdmin2, $cred.DomainAdmin)
         $metadata = New-LabMetadata -Inventory $inv -Instance $new -DnsServers @($dcs | ForEach-Object ipv4)
-        $secrets  = Add-LabTailscaleSecret -Inventory $inv -Secrets @{ 'svc-domainjoin' = Get-LabSecretText -Inventory $inv -Name 'svc-domainjoin' }
+        $secrets  = Add-LabTailscaleSecret -Inventory $inv -Role 'MGMT' -Secrets @{ 'svc-domainjoin' = Get-LabSecretText -Inventory $inv -Name 'svc-domainjoin' }
         $result = Deploy-LabInstance -Inventory $inv -Instance $new -Metadata $metadata -Secrets $secrets `
             -Credential $creds -ExtraAddress @($tf.($new.name).agent_ipv4) -Retry:$Retry
         if ($result.State.status -ne 'Complete') {

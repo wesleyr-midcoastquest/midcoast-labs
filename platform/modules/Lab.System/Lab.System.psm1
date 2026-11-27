@@ -380,7 +380,7 @@ function Restart-LabComputer {
     shutdown.exe /r /t 15 /c "MidCoast Lab bootstrap: $Reason" /d p:4:1 | Out-Null
 }
 
-# ── Tailscale (site.yaml tailscale.enabled) ───────────────────────────────
+# ── Tailscale (site.yaml tailscale.enabled; per role in lab.yaml) ─────────
 
 function Test-LabTailnetAddress {
     # True for a Tailscale address: 100.64.0.0/10 or fd7a:115c:a1e0::/48.
@@ -466,11 +466,12 @@ function Install-LabTailscale {
 }
 
 function Join-LabTailnet {
-    # The role scripts' Tailscale step (site.yaml tailscale.enabled): the key
-    # from the delivered secrets, Install-LabTailscale, and for a DC the
-    # single-homing before and the DNS clean-up after (Lab.AD). A failure is a
-    # warning, never a failed build: TS-001 reports it and the lab works
-    # without the tailnet. Returns nothing.
+    # The role scripts' Tailscale step (site.yaml tailscale.enabled, and
+    # tailscale: true on this machine's role in lab.yaml; 1.8: MGMT only): the
+    # key from the delivered secrets, Install-LabTailscale, and for a DC (only
+    # if lab.yaml turns it on for DCs again) the single-homing before and the
+    # DNS clean-up after (Lab.AD). A failure is a warning, never a failed build:
+    # TS-001 reports it and the lab works without the tailnet. Returns nothing.
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)] $Inventory,
@@ -479,6 +480,10 @@ function Join-LabTailnet {
         [switch] $Dc
     )
     if (-not $Inventory.tailscale.enabled) { return }
+    if (-not (Test-LabRoleTailscale -Inventory $Inventory -Role $Metadata.role)) {
+        Write-LabLog "Tailscale: not used by the $($Metadata.role) role (lab.yaml); not installed"
+        return
+    }
     try {
         $key = [System.Net.NetworkCredential]::new('', (Get-LabSecret -Name $Inventory.secrets.entries.tailscale_authkey)).Password
         if ($Dc) {

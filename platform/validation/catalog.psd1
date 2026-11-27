@@ -50,7 +50,9 @@
     # ── Remote Desktop ─────────────────────────────────────────────────
     'RDP-001'    = @{ Name = 'Remote Desktop on, listening, open to the lab subnet'; Category = 'RemoteDesktop'; Severity = 'High'; Recovery = 'RerunBootstrap' }
 
-    # ── Tailscale (site.yaml tailscale.enabled) ───────────────────────
+    # ── Tailscale (site.yaml tailscale.enabled; per role, lab.yaml) ──
+    # TS-001 passes on a role that doesn't join (1.8: every role but MGMT).
+    # DNS-005 stays for DCs built before 1.8, which have Tailscale.
     'TS-001'     = @{ Name = 'Joined to the tailnet and connected';  Category = 'Tailscale'; Severity = 'Medium'; Recovery = 'Review' }
     'DNS-005'    = @{ Name = "No Tailscale address in AD's DNS";     Category = 'DNS'; Severity = 'High'; Recovery = 'Review' }
 

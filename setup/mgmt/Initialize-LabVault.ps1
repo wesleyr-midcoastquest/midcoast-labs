@@ -156,7 +156,7 @@ foreach ($name in $prompted) {
     if ($existing -contains $name) { Write-Host "  $name exists"; continue }
     if ($name -eq $e.tailscale_authkey) {
         Write-Host "  Tailscale auth key: make it REUSABLE, tagged (e.g. tag:midcoast-lab) and NOT ephemeral (leave 'Ephemeral' off)." -ForegroundColor Yellow
-        Write-Host "  It goes to every lab machine; an ephemeral device drops off the tailnet when it's offline and can't rejoin." -ForegroundColor Yellow
+        Write-Host "  It goes to every MGMT the pipeline builds; an ephemeral device drops off the tailnet when it's offline and can't rejoin." -ForegroundColor Yellow
     }
     if ($name -eq $e.template_administrator) {
         Write-Host "  This site borrows the templates of the lab at vmid_base $($inv.proxmox.templates_from). Paste THAT lab's local Administrator" -ForegroundColor Yellow
