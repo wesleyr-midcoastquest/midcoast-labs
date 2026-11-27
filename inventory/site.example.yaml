@@ -47,8 +47,8 @@ network:
     - 192.168.20.0/24
 
 
-# Optional: join every lab machine (DCs, MGMT, the rest) to your tailnet, with
-# Remote Desktop over Tailscale. Make a reusable, tagged (e.g. tag:midcoast-lab)
+# Optional: join MGMT to your tailnet, with Remote Desktop over Tailscale (since
+# 1.8 only MGMT joins; reach the DCs by Remote Desktop from MGMT). Make a reusable, tagged (e.g. tag:midcoast-lab)
 # auth key, and NOT ephemeral (leave "Ephemeral" off: an ephemeral device drops off
 # the tailnet when offline and can't rejoin). It goes in the vault (Initialize-LabVault
 # asks for it), never in this file. Auth keys expire (90 days at most): replace it in the vault

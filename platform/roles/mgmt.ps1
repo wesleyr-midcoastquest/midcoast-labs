@@ -17,6 +17,7 @@
     setup/mgmt/Install-MgmtTools.ps1 and setup/mgmt/Join-LabDomain.ps1.
 
     Secrets used: svc-domainjoin; the Tailscale auth key, when site.yaml tailscale.enabled
+    (MGMT is the one role with lab.yaml tailscale: true)
 #>
 [CmdletBinding()]
 param(

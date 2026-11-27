@@ -2,14 +2,14 @@
 #Requires -RunAsAdministrator
 <#
 .SYNOPSIS
-    Puts the hand-built MGMT-00 on the site's tailnet the way every lab machine
+    Puts the hand-built MGMT-00 on the site's tailnet the way every pipeline-built MGMT
     is (site.yaml tailscale.enabled), with the reusable key from the vault
     (runbook step 6).
 
 .DESCRIPTION
     Pipeline-built machines join during their bootstrap; MGMT-00 is built before
     the vault exists, so it gets this step here, once, after Initialize-LabVault.
-    Same settings as every other lab machine (Lab.System Install-LabTailscale):
+    Same settings as every other MGMT (Lab.System Install-LabTailscale):
     --unattended --accept-routes=false --accept-dns=false, the Tailscale adapter
     kept out of DNS, Remote Desktop allowed on that adapter only, the AuthKey
     system policy and the MidCoastLab-Tailscale watchdog task, so a restart or

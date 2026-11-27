@@ -386,10 +386,41 @@ this doesn't open a DC to the home LAN or the tailnet. Who may sign in stays AD'
 for DCs (Administrators). Checked by `RDP-001` (DCs) and `MGMT-007` (MGMT). WinRM stays
 MGMT-only, since that's the pipeline's way in.
 
-## Tailscale on every lab machine
+## Tailscale on MGMT (1.8)
 
-**Why.** A way into every machine that doesn't depend on the lab's router, the subnet
-route or MGMT. Optional per site (`tailscale.enabled`).
+**Why MGMT only.** Until 1.8 every DC and MGMT joined the tailnet, for a way into each
+machine that doesn't depend on the lab's router or the subnet route. On a DC that cost
+more than it gave, all of it there to keep a second adapter out of AD's DNS (issue #26):
+the single-homing below, static domain-name and gc records the rotation has to remove, a
+cleanup of stray Tailscale records and `DNS-005` to check for them, and a reusable auth key
+at rest (the AuthKey policy and the watchdog) on every Tier 0 machine. So since 1.8 only
+MGMT joins: lab.yaml has `tailscale: true` on the MGMT role and `tailscale: false` on DC;
+a role without the value doesn't join (`Test-LabInventory` reads a missing value as
+false), and roles added later (member servers) opt in the same way. `site.yaml
+tailscale.enabled` still switches it off for the whole site. A DC gets no auth key in its
+build secrets, no install, no policy and no watchdog; `TS-001` passes on it as "not used
+by this role".
+
+**Getting to a DC** is Tailscale to MGMT, then Remote Desktop from MGMT: DCs allow Remote
+Desktop from the lab subnet already (above), so no firewall change. Or the Proxmox
+console, as before.
+
+**The DNS safeguards stay, for now.** The single-homing, the Tailscale record cleanup in
+the rotation and `DNS-005` are harmless with one adapter, and still catch leftovers from
+DCs built before 1.8 (and would protect a DC again if lab.yaml ever turned Tailscale on
+for DCs). They can go in a later release, once no DC with Tailscale is left.
+
+**Retiring a DC logs it out of the tailnet before demoting it.** The demotion runs with
+`-NoRebootOnCompletion`, and until the restart that follows the machine accepts neither
+the domain accounts nor the new local Administrator password, so a logout after it was
+refused and every retired DC stayed in the device list. The rotation (Retire, and Abort
+for the replacement) now logs out first, while the domain credentials still work: the
+AuthKey policy and the watchdog go first, so it doesn't log back in, and MGMT reaches the
+DC over the lab network, so nothing after it needs the tailnet. Devices left behind by
+earlier retirements are removed by hand in the Tailscale admin console.
+
+What follows is how a machine joins, which is now MGMT (and the DC parts for DCs built
+before 1.8).
 
 **The key is a secret, so it lives in the vault**, not in `site.yaml`: `site.yaml` is in
 git and in every handover and zip. It reaches each guest with the other build secrets and
@@ -400,7 +431,7 @@ devices drop off when a lab is shut down for a while, and don't come back by the
 DNS settings can replace a domain member's DNS and break AD; `--accept-routes=false`, or
 the lab's own subnet route would pull lab traffic through the tailnet.
 
-**DCs stay single-homed as far as AD is concerned.** A DC registers every address it has
+**DCs stay single-homed as far as AD is concerned** (DCs built before 1.8). A DC registers every address it has
 in AD's DNS (its host name, the domain name, gc, the partition names), and members would
 then try to reach it on its Tailscale address. So, before the adapter gets an address:
 the adapter doesn't register in DNS, the DNS server publishes only the lab address in its
@@ -418,7 +449,8 @@ rules decide which tailnet devices may connect. WinRM stays MGMT-only on the lab
 with `tailscale up --authkey --unattended` doesn't reliably survive a restart (a known,
 open Tailscale issue: the first DCs came back as "Needs authentication"). With the `AuthKey`
 system policy (`HKLM\SOFTWARE\Policies\Tailscale`), the service logs itself back in
-whenever it needs to. The trade-off is a reusable key at rest on every lab machine; the
+whenever it needs to. The trade-off is a reusable key at rest on each machine that joins
+(since 1.8, MGMT only); the
 policy key is readable by SYSTEM and Administrators only, which on Tier 0 machines are the
 people who could add devices anyway. Limit what the key can do in Tailscale: tag it, and
 let the tag's access rules allow only what the lab needs (Remote Desktop in). The same

@@ -97,7 +97,8 @@ function Resolve-LabInventory {
     Set-LabValue $r 'network.subnet'  $net
     Set-LabValue $r 'network.gateway' $Site.network.gateway
     Set-LabValue $r 'network.ntp'     @($Site.network.ntp)
-    # Optional: join every lab machine to the site's tailnet (key in the vault).
+    # Optional: join the site's tailnet (key in the vault). Which roles join is
+    # the product's choice, per role (lab.yaml servers[].tailscale; 1.8: MGMT only).
     Set-LabValue $r 'tailscale.enabled' ([bool] ($Site.tailscale -and $Site.tailscale.enabled -eq $true))
     # Optional: networks besides the lab subnet allowed Remote Desktop to MGMT.
     Set-LabValue $r 'network.remote_desktop_from' @($Site.network.remote_desktop_from | Where-Object { $_ })
@@ -224,6 +225,21 @@ function Get-LabTemplateKey {
     @($Inventory.templates.PSObject.Properties | Where-Object { $_.Value.template_name -eq $Family } | ForEach-Object Name)[0]
 }
 
+function Test-LabRoleTailscale {
+    # True when machines of this role join the tailnet: site.yaml
+    # tailscale.enabled for the whole site, and tailscale: true on the role in
+    # lab.yaml (1.8; a missing value is false). Before 1.8 every DC and MGMT
+    # joined; since 1.8 lab.yaml turns it on for MGMT only (issue #26).
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] $Inventory,
+        [Parameter(Mandatory)] [AllowEmptyString()] [string] $Role
+    )
+    if (-not ($Inventory.tailscale -and $Inventory.tailscale.enabled -eq $true)) { return $false }
+    $defs = @($Inventory.servers | Where-Object { $_.role -eq $Role })
+    [bool] (@($defs | Where-Object { $_.tailscale -eq $true }).Count -gt 0)
+}
+
 function Get-LabRoleDefinition {
     [CmdletBinding()]
     param(
@@ -347,7 +363,7 @@ function Get-LabActiveDCs {
 }
 
 Export-ModuleMember -Function Get-LabInventory, ConvertTo-LabYymmdd, New-LabHostname,
-    Get-LabRoleDefinition, Get-LabTemplateKey, Get-LabDomainDN, ConvertTo-LabOUDistinguishedName,
+    Get-LabRoleDefinition, Test-LabRoleTailscale, Get-LabTemplateKey, Get-LabDomainDN, ConvertTo-LabOUDistinguishedName,
     Get-LabPrefixLength, Get-LabRoleAddresses, ConvertTo-LabSiteSlug, Get-LabInstances, Get-LabTemplateVersions, Get-LabActiveDCs,
     Get-LabTierOU, Get-LabOUTier, Get-LabComputerOUs, Get-LabGroupNames,
     ConvertTo-LabHostAddress, Resolve-LabInventory, Import-LabInventory

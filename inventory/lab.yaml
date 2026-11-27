@@ -13,9 +13,9 @@
 # dates, sequences and DC/MGMT slots) lives in inventory/instances.yaml, a ledger
 # the pipeline writes. Never hand-edit the ledger.
 
-version: "1.7"                                   # CHANGED: 1.6 -> 1.7 (site-neutral templates, site.yaml templates.shared_from)
+version: "1.8"                                   # CHANGED: 1.7 -> 1.8 (Tailscale per role: MGMT only)
                                                  # Compatibility number; changes rarely (see CHANGELOG.md).
-release: LAB-261126-01                           # ADDED: release name, LAB-<YYMMDD>-<NN>; every merged change gets a new one
+release: LAB-261127-00                           # ADDED: release name, LAB-<YYMMDD>-<NN>; every merged change gets a new one
 
 environment:
   name: MidCoast-Lab
@@ -185,6 +185,10 @@ servers:
 
     disk_gb: 50                                  # CHANGED (1.3): 80 -> 50
 
+    # ADDED (1.8): DCs never join the tailnet (issue #26). Reach a DC by Remote
+    # Desktop from MGMT, or the Proxmox console. See docs/decisions.md.
+    tailscale: false
+
     services:
 
       - ActiveDirectory
@@ -253,6 +257,10 @@ servers:
     memory_min_mb: 4096                          # ADDED (1.3)
 
     disk_gb: 100
+
+    # ADDED (1.8): joins the tailnet when site.yaml tailscale.enabled. The only
+    # role that does: a role without tailscale: true never joins.
+    tailscale: true
 
     slots:
       - id: A
@@ -419,7 +427,8 @@ secrets:                                         # ADDED: names in the KeePass v
     dsrm: MidCoast-DSRM
     proxmox_terraform_token: MidCoast-Proxmox-terraform
     proxmox_packer_token: MidCoast-Proxmox-packer
-    tailscale_authkey: MidCoast-Tailscale-AuthKey      # ADDED (1.4): only when site.yaml tailscale.enabled
+    tailscale_authkey: MidCoast-Tailscale-AuthKey      # ADDED (1.4): only when site.yaml tailscale.enabled;
+                                                       # delivered only to roles with tailscale: true (1.8: MGMT)
     template_administrator: MidCoast-TemplateAdministrator  # ADDED (1.7): only with site.yaml templates.shared_from:
                                                        # the OWNER lab's local Administrator password, which its
                                                        # templates carry; used once per clone, then replaced by ours

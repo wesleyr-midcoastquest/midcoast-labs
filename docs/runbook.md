@@ -200,7 +200,7 @@ after the domain join), then delete the file as the script says (`shred -u ...`)
    `MidCoast-LocalAdministrator`), stored as `MidCoast-TemplateAdministrator`: its
    templates carry it, and the pipeline replaces it with yours on each new machine.
 
-   The Tailscale key for the vault is the one every lab machine uses: make it in the admin
+   The Tailscale key for the vault is the one every pipeline-built MGMT uses: make it in the admin
    console (Settings, Keys) **reusable**, **tagged** (e.g. `tag:midcoast-lab`) and **not
    ephemeral** (leave *Ephemeral* off). An ephemeral device is removed from the tailnet
    once it's offline for a while and can't rejoin by itself; lab machines restart, and the

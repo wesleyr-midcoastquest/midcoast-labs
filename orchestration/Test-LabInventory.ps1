@@ -301,6 +301,12 @@ if ($gwU -ge $startU -and $gwU -le $endU) { Add-Finding 'Error' 'Gateway' "Gatew
 if ($null -ne $siteRaw.tailscale -and $null -ne $siteRaw.tailscale.enabled -and $siteRaw.tailscale.enabled -isnot [bool]) {
     Add-Finding 'Error' 'Tailscale' "site.yaml tailscale.enabled must be true or false, not '$($siteRaw.tailscale.enabled)'."
 }
+# 1.8: which roles join the tailnet is per role in lab.yaml (tailscale: true); missing is false.
+foreach ($srv in @($product.servers)) {
+    if ($null -ne $srv.tailscale -and $srv.tailscale -isnot [bool]) {
+        Add-Finding 'Error' 'Tailscale' "lab.yaml role $($srv.role) tailscale must be true or false, not '$($srv.tailscale)'."
+    }
+}
 foreach ($src in @($inv.network.remote_desktop_from | Where-Object { $_ })) {
     $a, $b = ([string] $src) -split '/', 2
     $okAddr = [bool] ($a -match '^\d{1,3}(\.\d{1,3}){3}$' -and [System.Net.IPAddress]::TryParse($a, [ref] $null))
