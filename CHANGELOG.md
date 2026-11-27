@@ -18,6 +18,20 @@ Two numbers, in `inventory/lab.yaml`:
 Every release section starts with what it needs: *nothing*, *rebuild templates*, *rotate
 DCs / MGMT*, or *site.yaml change*. Details and reasons: [docs/decisions.md](docs/decisions.md).
 
+## LAB-261127-03 (compatibility 1.8): the repos' new home, MidCoast-Labs
+
+Needs: nothing. Documentation only; no script changes (issue #31).
+
+Changed:
+- **The public repos moved to the GitHub organization
+  [MidCoast-Labs](https://github.com/MidCoast-Labs)**, from a personal account. The
+  README's Releases links and `git clone` URL point there, and `LICENSE` names
+  MidCoast-Labs as the copyright holder.
+
+Existing clones keep working through GitHub's redirect. To point one at the new home:
+`git remote set-url origin https://github.com/MidCoast-Labs/midcoast-labs.git`. Release
+tags are unchanged.
+
 ## LAB-261127-02 (compatibility 1.8): MGMT rotation keeps CERT and the logs
 
 Needs: nothing. The next MGMT rotation (`Invoke-LabMgmtRotation.ps1 -Stage Prepare`)
