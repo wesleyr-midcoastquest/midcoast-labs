@@ -68,7 +68,7 @@ other values that differ per installation. You make it from `inventory/site.temp
 - **Replace each DC before 180 days**, one at a time:
   [docs/replace-dc.md](docs/replace-dc.md).
 
-**4. Update.** New releases (`LAB-<YYMMDD>-<NN>`) are listed under [Releases](https://github.com/wesleyr-midcoastquest/midcoast-labs/releases/latest). Each entry in
+**4. Update.** New releases (`LAB-<YYMMDD>-<NN>`) are listed under [Releases](https://github.com/MidCoast-Labs/midcoast-labs/releases/latest). Each entry in
 [CHANGELOG.md](CHANGELOG.md) starts with what it needs from you: usually nothing beyond
 taking the new files, sometimes rebuilding templates or replacing machines, and only for
 a new major version a change to `site.yaml`. Take a release on the active MGMT by
@@ -246,14 +246,14 @@ PowerShell 7). At the end you have your site kit, and the runbook takes it from 
 of its own, a domain in your Microsoft 365 tenant, the three ISOs.
 
 **2. Get the repo.** For a tested version, use the **latest release**: it's at the top of
-[Releases](https://github.com/wesleyr-midcoastquest/midcoast-labs/releases/latest), and each release is a tag (`LAB-<YYMMDD>-<NN>`). `master` can be ahead
+[Releases](https://github.com/MidCoast-Labs/midcoast-labs/releases/latest), and each release is a tag (`LAB-<YYMMDD>-<NN>`). `master` can be ahead
 of it. Either way:
 - **Download it**: the release's **Source code (zip)**. (**Code → Download ZIP** gets
   `master` instead.)
 - **Clone it**, if you have Git, and make a branch of your own at the release, so your
   site's commits (the ledger) have a branch to go on:
   ```
-  git clone https://github.com/wesleyr-midcoastquest/midcoast-labs.git
+  git clone https://github.com/MidCoast-Labs/midcoast-labs.git
   cd midcoast-labs
   git switch -c my-site LAB-<YYMMDD>-<NN>
   ```
