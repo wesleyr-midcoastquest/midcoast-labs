@@ -13,7 +13,7 @@ The scripts' comment-based help is the source of this page; `./tools/New-LabScri
 | `orchestration/Reset-LabLedger.ps1` | Resets the ledger and Terraform state after a lab has been torn down, so the pipeline can build again from nothing (runbook, "Starting over"). | PowerShell 7 |
 | `orchestration/Test-LabInventory.ps1` | Inventory validation: syntax, schema and semantic rules, for the product design (lab.yaml), the site settings (site.yaml), and the resolved result. | PowerShell 7 |
 | `orchestration/Test-LabSite.ps1` | Live pre-flight check of the site: does this Proxmox and this network match site.yaml, and is everything the lab will claim actually free? | PowerShell 7 |
-| `setup/New-LabSiteKit.ps1` | Generates the site kit: a filled-in runbook and the Proxmox setup script, from inventory/lab.yaml + inventory/site.yaml. | PowerShell 7 |
+| `setup/New-LabSiteKit.ps1` | Generates the site kit: a filled-in runbook and the Proxmox setup script, from inventory/lab.yaml + the site's site.yaml (site/site.yaml, the folder in $env:MIDCOAST_LAB_SITE, or the old inventory/site.yaml). | PowerShell 7 |
 | `setup/mgmt/Initialize-LabRepo.ps1` | Puts the repo where the pipeline expects it on MGMT-00, as a git repository, with a git identity (runbook step 5). | PowerShell 7 |
 | `setup/mgmt/Initialize-LabVault.ps1` | Creates the KeePass vault if needed, registers it for your account, and fills in every secret the inventory names (runbook step 6; again for each new account or MGMT). | PowerShell 7 |
 | `setup/mgmt/Install-MgmtTools.ps1` | Installs the MGMT toolchain on the hand-built MGMT-00 (runbook step 5). | elevated |
@@ -22,7 +22,9 @@ The scripts' comment-based help is the source of this page; `./tools/New-LabScri
 | `setup/proxmox/proxmox-setup.sh` | one-time Proxmox setup for a MidCoast Lab site. | node, root |
 | `setup/proxmox/proxmox-teardown.sh` | removes a MidCoast Lab site from Proxmox, so it can be built again from scratch. | node, root |
 | `tools/Export-LabRelease.ps1` | Exports a release of the product (no site, no ledger) into a folder, for the public repo. | PowerShell 7 |
+| `tools/Install-LabGitHooks.ps1` | Installs the pre-push hook that runs Test-LabPublicTree.ps1 on every push from this clone of the product, with your site's deny list. | PowerShell 7 |
 | `tools/New-LabScriptReference.ps1` | Generates docs/scripts.md: every script in the repo, its parameters and switches, where it runs and when, from the scripts' own help. | PowerShell 7 |
+| `tools/Test-LabPublicTree.ps1` | Checks that a commit (or the commits about to be pushed) holds nothing that belongs to one site: no site files, no secrets, no private patterns. | PowerShell 7 |
 | `platform/bootstrap.ps1` | MidCoast Lab bootstrap. Runs inside every pipeline-built guest. | Windows PowerShell 5.1 or 7 |
 | `platform/validate.ps1` | Runs this machine's role validation on demand (outside bootstrap). | Windows PowerShell 5.1 or 7 |
 | `platform/roles/dc.ps1` | DC role. Called by bootstrap.ps1 once per stage; returns the next stage. | Windows PowerShell 5.1 or 7 |
@@ -213,7 +215,7 @@ Resets the ledger and Terraform state after a lab has been torn down, so the pip
 Runs: PowerShell 7.
 
 proxmox-teardown.sh destroys the lab's VMs on Proxmox, but the ledger
-(inventory/instances.yaml) lives in the repo and still lists the old DCs,
+(instances.yaml, in the site folder) still lists the old DCs,
 MGMT and template versions, and C:\MidCoastLab\state still holds Terraform
 state for them. The next Invoke-LabPhase then believes the lab is deployed
 (issue #20). This script:
@@ -223,7 +225,8 @@ state for them. The next Invoke-LabPhase then believes the lab is deployed
   2. Empties instances:, drops every template version that is gone from
      Proxmox (a version that still exists is kept), removes the Terraform
      state file and its backup, and the handover and CERT lock files.
-  3. Commits the ledger (git add + commit; push is left to you).
+  3. Commits the ledger in the site's repo (git -C site add + commit, or
+     the product repo for the old inventory/ layout; push is left to you).
 Run it on the machine that will run the pipeline next (MGMT-00 of the new
 build), after Initialize-LabRepo.ps1. A fresh clone of your repo carries
 the old ledger too, so a new MGMT-00 needs it as much as an old one.
@@ -255,8 +258,8 @@ the resolved inventory.
 | Parameter | Required | Default | Meaning |
 |---|---|---|---|
 | `-InventoryPath <string>` |  |  |  |
-| `-SitePath <string>` |  |  |  |
-| `-LedgerPath <string>` |  |  |  |
+| `-SitePath <string>` |  |  | site.yaml to check. Default: the site folder's (site/site.yaml, the folder in $env:MIDCOAST_LAB_SITE, or the old inventory/site.yaml). |
+| `-LedgerPath <string>` |  |  | The ledger to check. Default: instances.yaml in the same site folder. |
 | `-PassThru` |  |  |  |
 
 ```powershell
@@ -299,7 +302,7 @@ automatically; errors stop them.
 
 ### `setup/New-LabSiteKit.ps1`
 
-Generates the site kit: a filled-in runbook and the Proxmox setup script, from inventory/lab.yaml + inventory/site.yaml.
+Generates the site kit: a filled-in runbook and the Proxmox setup script, from inventory/lab.yaml + the site's site.yaml (site/site.yaml, the folder in $env:MIDCOAST_LAB_SITE, or the old inventory/site.yaml).
 
 Runs: PowerShell 7.
 
@@ -330,17 +333,28 @@ Runs: PowerShell 7.
 
 Run from any copy of the repo (a clone, an extracted zip, a copied folder)
 on MGMT-00, in a normal PowerShell 7 window, after Install-MgmtTools.ps1.
+The site's files (site.yaml, the ledger instances.yaml) belong in site\ in
+the repo folder: gitignored by the product, and a git repository of its own
+(a clone of your private site repo, or a new one). The old layout,
+inventory\site.yaml, still works with a warning. MIDCOAST_LAB_SITE is not
+accepted here: on MGMT the site must be inside the repo folder.
 1. Copies this folder to the repo path from lab.yaml (handover.repo_path,
-   C:\MidCoastLab\repo) unless it is already there, including site.yaml.
-2. Makes it a git repository if it isn't one (a copied or extracted folder
-   has no .git), sets core.filemode=false (a clone copied from Linux would
-   otherwise show every .sh file as modified), and commits everything. You don't need a remote: the
-   pipeline only needs the local history. Add a private remote later if you
-   want a copy elsewhere (README, Requirements).
-3. Sets git's user.name and user.email for your account, from site.yaml's
+   C:\MidCoastLab\repo) unless it is already there, site\ included.
+2. Makes site\ a git repository if it isn't one, starts an empty ledger
+   there if it has none, and commits site.yaml and instances.yaml. In the
+   old layout there is no site repo, and both files are committed in the
+   product repo as before.
+3. Makes the product folder a git repository if it isn't one (a copied or
+   extracted folder has no .git), sets core.filemode=false in both repos (a
+   clone copied from Linux would otherwise show every .sh file as modified),
+   and commits everything. You don't need a remote: the pipeline only needs
+   the local history. Add a private remote later if you want a copy
+   elsewhere (README, Requirements). It refuses if the product repo tracks
+   a site file, secrets or state.
+4. Sets git's user.name and user.email for your account, from site.yaml's
    administrator (given name, surname, <username>@<tenant domain>), unless
    you set them already.
-4. Runs Test-LabInventory.ps1 from the new location.
+5. Runs Test-LabInventory.ps1 from the new location.
 
 ```powershell
 cd C:\Users\LabAdmin\Downloads\midcoast-labs
@@ -580,6 +594,28 @@ file contains:
 ./tools/Export-LabRelease.ps1 -Destination ../midcoast-labs
 ```
 
+### `tools/Install-LabGitHooks.ps1`
+
+Installs the pre-push hook that runs Test-LabPublicTree.ps1 on every push from this clone of the product, with your site's deny list.
+
+Runs: PowerShell 7.
+
+Run it once in every clone of the product you push from (your workstation,
+a development clone). Once a branch reaches GitHub it is public: this hook
+is the only check that runs before that, and the only one that knows your
+site's private patterns. For each branch being pushed it runs
+  Test-LabPublicTree.ps1 -Base <remote commit> -Head <local commit> -UseSiteDenyList
+which refuses site files, secrets and lines matching your deny list
+(deny.txt in $env:MIDCOAST_LAB_SITE, or else site/deny.txt), and stops the
+push on any hit. Needs pwsh on the PATH of the shell git runs hooks in.
+
+It refuses to replace a pre-push hook it didn't install, unless -Force.
+git push --no-verify skips the hook; don't.
+
+| Parameter | Required | Default | Meaning |
+|---|---|---|---|
+| `-Force` |  |  | Replace an existing pre-push hook that this script didn't install. |
+
 ### `tools/New-LabScriptReference.ps1`
 
 Generates docs/scripts.md: every script in the repo, its parameters and switches, where it runs and when, from the scripts' own help.
@@ -605,6 +641,48 @@ while docs/scripts.md is out of date.
 ```powershell
 ./tools/New-LabScriptReference.ps1           # writes docs/scripts.md
 ./tools/New-LabScriptReference.ps1 -Check    # CI / pre-release check
+```
+
+### `tools/Test-LabPublicTree.ps1`
+
+Checks that a commit (or the commits about to be pushed) holds nothing that belongs to one site: no site files, no secrets, no private patterns.
+
+Runs: PowerShell 7.
+
+The product repo is public and shared by every site; each site's own files
+live in its site folder (site/, its own repo), never in the product. This
+refuses, listing every hit:
+  - a forbidden path: site/, inventory/site.yaml, *.kdbx, *.tfstate*,
+    passwords*, and inventory/instances.yaml unless it is the empty ledger
+    (instances: [] and templates: [] only);
+  - a line shaped like a secret: a Tailscale or GitHub key, a private key,
+    a Proxmox token with its secret;
+  - with -DenyPath or -UseSiteDenyList, a line matching a pattern from a
+    site's private deny list (one regular expression per line, # comments).
+Without -Head it checks the whole tree of -Ref (default HEAD). With -Head it
+checks every commit being pushed: each path they add or change, and each
+line they add, from -Base (the remote's commit) to -Head, or, without
+-Base, every commit of -Head that no remote-tracking branch has yet. The
+tree of -Head gets the path check too.
+Then it runs New-LabScriptReference.ps1 -Check: docs/scripts.md must be
+current. Exits 1 on any hit.
+
+The pre-push hook from Install-LabGitHooks.ps1 runs it with -Head, -Base
+and -UseSiteDenyList before every push: once a branch reaches GitHub it is
+public, so that hook is the only check that runs before a leak, and the
+only one that knows your private patterns.
+
+| Parameter | Required | Default | Meaning |
+|---|---|---|---|
+| `-Ref <string>` |  | `'HEAD'` | The commit whose whole tree is checked when -Head isn't given. |
+| `-Base <string>` |  |  | With -Head: the commit the remote already has; only what comes after it is checked. |
+| `-Head <string>` |  |  | The commit being pushed. Checks the commits from -Base to it. |
+| `-DenyPath <string>` |  |  | A private deny list to scan with as well. |
+| `-UseSiteDenyList` |  |  | Also scan with the site's deny list, when there is one: deny.txt in the folder named by $env:MIDCOAST_LAB_SITE, or else site/deny.txt. |
+
+```powershell
+./tools/Test-LabPublicTree.ps1                      # the tree of HEAD: paths and secrets
+./tools/Test-LabPublicTree.ps1 -DenyPath site/deny.txt -Base origin/master -Head HEAD
 ```
 
 ## Platform: inside every guest

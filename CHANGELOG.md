@@ -18,6 +18,57 @@ Two numbers, in `inventory/lab.yaml`:
 Every release section starts with what it needs: *nothing*, *rebuild templates*, *rotate
 DCs / MGMT*, or *site.yaml change*. Details and reasons: [docs/decisions.md](docs/decisions.md).
 
+## LAB-261128-00 (compatibility 1.8): the site folder
+
+Needs: nothing. The old layout (`inventory/site.yaml`, `inventory/instances.yaml`) still
+works, with a warning; move both into `site/` when convenient (below).
+
+Changed:
+- **A site's files live in the site folder, `site/`**: `site.yaml`, the ledger
+  `instances.yaml` and, optionally, `deny.txt`. The product's `.gitignore` lists `site/`
+  (and `inventory/site.yaml`, so a new one can't be committed by mistake), and the folder
+  is a git repository of its own: the ledger is committed there
+  (`git -C site add instances.yaml; git -C site commit`), and the pipeline's commit hint
+  says so. On a workstation the folder can be elsewhere: set `MIDCOAST_LAB_SITE` to it.
+  On MGMT only `site\` is accepted. Why: [docs/decisions.md](docs/decisions.md), "The
+  site folder".
+- **Every script finds the site the same way** (`Get-LabSiteDirectory` and
+  `Get-LabSiteFile` in Lab.Inventory): the orchestration, `Test-LabInventory.ps1`,
+  `New-LabSiteKit.ps1`, `Initialize-LabVault.ps1`, `Reset-LabLedger.ps1` (commits the
+  ledger in the site's repo) and the MGMT rotation (also warns about uncommitted changes
+  in the site's repo).
+- **Terraform is given the ledger and the resolved inventory** on every plan and apply
+  (`-var=ledger_path`, `-var=inventory_path`); before, apply read `variables.tf`'s
+  default ledger path. Its default is now `../site/instances.yaml`.
+- **The MGMT handover checks the site arrived**: the ledger where the site keeps it, and
+  `site\.git` when the old MGMT's site folder is a repository.
+- **`Initialize-LabRepo.ps1`** takes `site\site.yaml` (or the old layout, with a
+  warning), makes `site\` a git repository and commits it, starts an empty ledger there
+  if there is none, and refuses if the product repo tracks `site\` or, in the new layout,
+  `inventory\site.yaml`.
+
+Added:
+- **`tools/Test-LabPublicTree.ps1`**: refuses site files (`site/`, `inventory/site.yaml`,
+  a ledger that isn't empty), vaults, Terraform state, passwords files, secret-shaped lines
+  and, with a deny list, a site's private patterns; on a whole tree, or on just the commits
+  being pushed. It also checks `docs/scripts.md` is current.
+- **`tools/Install-LabGitHooks.ps1`**: installs a pre-push hook that runs it on every
+  push, with `site/deny.txt` (or `deny.txt` in `MIDCOAST_LAB_SITE`). **Run it in every
+  clone you push from:** once a branch is on GitHub it is public, and the hook is the only
+  check that runs before that.
+
+To move an existing lab to the site folder, on MGMT, in `C:\MidCoastLab\repo`, after a
+pipeline run with the ledger committed:
+```powershell
+New-Item site -ItemType Directory
+Move-Item inventory/site.yaml, inventory/instances.yaml site/
+git rm --cached inventory/site.yaml inventory/instances.yaml   # skip if they weren't tracked
+git commit -m "Site files moved to the site folder"
+git -C site init; git -C site add -A; git -C site commit -m "Site"
+./orchestration/Test-LabInventory.ps1
+```
+After that, push the site's repo (`git -C site push`) to a **private** remote of its own.
+
 ## LAB-261127-03 (compatibility 1.8): the repos' new home, MidCoast-Labs
 
 Needs: nothing. Documentation only; no script changes (issue #31).

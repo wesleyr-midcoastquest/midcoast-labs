@@ -37,7 +37,8 @@ installs the same toolchain as the hand-build, turns on Remote Desktop (lab subn
 Administrator. Prepare stops on any Critical result from its validation (`MGMT-001…007`:
 toolchain, RSAT, modules, domain trust, WinRM reach to every DC, Proxmox API, Remote
 Desktop; RSAT is High, so only reported), then hands over the
-repo (with git history), Terraform state and KeePass vault, each hash-verified, and:
+repo (with git history, and its site folder `site\` with the site's own history and
+ledger), Terraform state and KeePass vault, each hash-verified, and:
 - **CERT**, if installed (`handover.cert_path`, `C:\MidCoastLab\cert`): the same folder,
   so the same version, `cert.config.yaml` and module sources, and its runs folder
   (`runs_path` in CERT's config). Each run folder stays limited to the account that ran
@@ -68,7 +69,7 @@ rollback is still possible.
 **3. When you're happy with the new MGMT**, still on it:
 ```powershell
 ./orchestration/Invoke-LabMgmtRotation.ps1 -Stage Complete
-git add inventory/instances.yaml; git commit -m "MGMT rotation"; git push
+git -C site add instances.yaml; git -C site commit -m "MGMT rotation"; git -C site push
 ```
 It destroys the old VM and confirms it's gone, and only then removes its computer object
 and DNS records. (Skip `-KeepOld` in step 2 to do both at once.) Your git name and e-mail

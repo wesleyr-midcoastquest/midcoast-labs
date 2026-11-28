@@ -10,6 +10,9 @@ that's too open, a way around the Terraform guard), please report it privately w
 GitHub's **Report a vulnerability** (Security tab), not in a public issue.
 
 **Never commit secrets.** A site's secrets live only in its KeePass vault on MGMT; the
-repo's `.gitignore` keeps out the vault (`*.kdbx`) and Terraform state. Your own
-`inventory/site.yaml` and `inventory/instances.yaml` describe your lab (domain, subnet,
-machine names): keep the repo that holds them private.
+repo's `.gitignore` keeps out the vault (`*.kdbx`), Terraform state and the site folder.
+Your own `site/site.yaml` and `site/instances.yaml` describe your lab (domain, subnet,
+machine names): keep the site folder's repo private, and run
+`tools/Install-LabGitHooks.ps1` in every clone you push from, so its pre-push hook
+(`tools/Test-LabPublicTree.ps1`) stops site files, secrets and your private patterns
+(`site/deny.txt`) before they leave your machine.

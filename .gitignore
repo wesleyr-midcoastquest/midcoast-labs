@@ -12,6 +12,13 @@ passwords.*
 packer_cache/
 crash.log
 
+# The site's own files (site.yaml, instances.yaml, deny.txt) live in site/, a
+# repo of their own, never in the product (Get-LabSiteDirectory). The old
+# layout's inventory/site.yaml stays tracked where it already is; a new one
+# can't be added by accident.
+/site/
+/inventory/site.yaml
+
 # Generated
 inventory/resolved/
 out/
