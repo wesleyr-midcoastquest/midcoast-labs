@@ -130,7 +130,9 @@ if ("$($siteRaw.site.name)" -and "$($siteRaw.site.name)" -notmatch '^[A-Za-z0-9]
 foreach ($iso in 'windows_server_2022', 'windows_11', 'virtio') {
     $v = [string] $siteRaw.isos.$iso
     $store = [string] $siteRaw.proxmox.storage.iso_repository
-    if ($v -and $v -notmatch "^$([regex]::Escape($store)):iso/.+\.iso$") {
+    if ($v -match '\s') {
+        Add-Finding 'Error' 'IsoName' "isos.$iso '$v' contains a space; Proxmox volume names can't usefully hold one. Rename the file on $store (or fix the typo) and use the exact name."
+    } elseif ($v -and $v -notmatch "^$([regex]::Escape($store)):iso/.+\.iso$") {
         Add-Finding 'Error' 'IsoName' "isos.$iso '$v' should look like '${store}:iso/<file>.iso' (on proxmox.storage.iso_repository)."
     }
 }
