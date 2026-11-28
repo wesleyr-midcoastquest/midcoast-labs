@@ -18,6 +18,33 @@ Two numbers, in `inventory/lab.yaml`:
 Every release section starts with what it needs: *nothing*, *rebuild templates*, *rotate
 DCs / MGMT*, or *site.yaml change*. Details and reasons: [docs/decisions.md](docs/decisions.md).
 
+## LAB-261128-01 (compatibility 1.8): a re-run of proxmox-setup.sh accepts its own user
+
+Needs: nothing for a lab that's already set up. For a site still being set up,
+regenerate the site kit (`./setup/New-LabSiteKit.ps1`) and run the new
+`proxmox-setup.sh` (issue #32).
+
+Fixed:
+- **Re-running `proxmox-setup.sh` failed pre-flight on the service account its first run
+  created**: `user '…' belongs to site '<site>.', not '<site>'`, with a trailing full
+  stop. The user's comment has a full stop straight after the site name, and pre-flight
+  read that full stop as part of the name, so a setup that stopped part-way couldn't be
+  resumed.
+
+Changed:
+- **The pool's and the user's comments are defined once** (`POOL_COMMENT`,
+  `USER_COMMENT`), used when setup creates them and compared in pre-flight. A comment
+  that is exactly this site's means this site's object; otherwise the owner is read from
+  the full comment format, then from the looser pattern used before, so a pool or user
+  that names another site still stops pre-flight. Site names that contain or end in a dot
+  (which `site.name` allows) are handled. Existing pools and users need no change: their
+  comments already have this form.
+
+A kit generated before this release keeps the bug until it is regenerated. To fix one
+in place, in the kit's `proxmox-setup.sh`:
+`sed -i "/re.search(r'site (/s/print(m.group(1) if m else '')/print(m.group(1).rstrip('.') if m else '')/" proxmox-setup.sh`
+(right for site names that don't end in a dot).
+
 ## LAB-261128-00 (compatibility 1.8): the site folder
 
 Needs: nothing. The old layout (`inventory/site.yaml`, `inventory/instances.yaml`) still

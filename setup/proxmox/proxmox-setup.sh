@@ -60,6 +60,10 @@ MODE="${1:-setup}"
 [[ "$(id -u)" -eq 0 ]] || { echo "Run as root." >&2; exit 2; }
 SECRETS_FILE="/root/midcoast-$SITE_NAME-secrets.txt"
 ANSWER_ISO="midcoast-mgmt00-answer.iso"
+# The comments that mark the pool and the user as this site's: setup writes them and
+# pre-flight compares against them, so the two can't drift apart.
+POOL_COMMENT="MidCoast Lab site $SITE_NAME (managed by pipeline)"
+USER_COMMENT="MidCoast Lab provisioning (Terraform/Packer) for site $SITE_NAME. Tokens only."
 
 # ── MGMT-00 unattended install: wait for it, then tidy up ─────────────────
 guest_has_marker() {  # true once MGMT-00's first-logon setup has written its marker
@@ -151,18 +155,29 @@ fi
 
 # The lab's names must not belong to another site (two labs on one cluster each
 # need their own pool, role, tag and user; site.yaml sets them, "{site}" helps).
-POOL_OWNER="$(pveum pool list --output-format json | python3 -c "
-import json,sys,re
+# A comment equal to the one setup writes means this site's. Otherwise the owner is
+# parsed from that full format, then from the looser older pattern. (Site names may
+# contain or end in a dot, so a trailing "." can't simply be stripped.)
+POOL_OWNER="$(pveum pool list --output-format json | POOL="$POOL" POOL_COMMENT="$POOL_COMMENT" SITE_NAME="$SITE_NAME" python3 -c "
+import json,os,sys,re
 for p in json.load(sys.stdin):
-    if p['poolid']=='$POOL':
-        m=re.search(r'MidCoast Lab site (\S+)', p.get('comment','') or ''); print(m.group(1) if m else '')
+    if p['poolid']==os.environ['POOL']:
+        c=p.get('comment','') or ''
+        if c==os.environ['POOL_COMMENT']: print(os.environ['SITE_NAME'])
+        else:
+            m=re.search(r'MidCoast Lab site (\S+) \(managed by pipeline\)', c) or re.search(r'MidCoast Lab site (\S+)', c)
+            print(m.group(1) if m else '')
 " 2>/dev/null || true)"
 [[ -z "$POOL_OWNER" || "$POOL_OWNER" == "$SITE_NAME" ]] || fail "pool '$POOL' belongs to site '$POOL_OWNER', not '$SITE_NAME'. Set proxmox.pool (and role, tag, service_account.user) in site.yaml, e.g. with {site}, and regenerate the kit."
-USER_OWNER="$(pveum user list --output-format json | python3 -c "
-import json,sys,re
+USER_OWNER="$(pveum user list --output-format json | USER_ID="$USER_ID" USER_COMMENT="$USER_COMMENT" SITE_NAME="$SITE_NAME" python3 -c "
+import json,os,sys,re
 for u in json.load(sys.stdin):
-    if u['userid']=='$USER_ID':
-        m=re.search(r'site (\S+)', u.get('comment','') or ''); print(m.group(1) if m else '')
+    if u['userid']==os.environ['USER_ID']:
+        c=u.get('comment','') or ''
+        if c==os.environ['USER_COMMENT']: print(os.environ['SITE_NAME'])
+        else:
+            m=re.search(r'for site (\S+)\. Tokens only\.', c) or re.search(r'site (\S+)', c)
+            print(m.group(1) if m else '')
 " 2>/dev/null || true)"
 [[ -z "$USER_OWNER" || "$USER_OWNER" == "$SITE_NAME" ]] || fail "user '$USER_ID' belongs to site '$USER_OWNER', not '$SITE_NAME'. Set proxmox.service_account.user in site.yaml and regenerate the kit."
 
@@ -284,7 +299,7 @@ PRIV_LIST="$(IFS=,; echo "${PRIVS[*]}")"
 
 echo "==> Pool $POOL"
 pveum pool list --output-format json | python3 -c "import json,sys; sys.exit(0 if any(p['poolid']=='$POOL' for p in json.load(sys.stdin)) else 1)" \
-  || pveum pool add "$POOL" --comment "MidCoast Lab site $SITE_NAME (managed by pipeline)"
+  || pveum pool add "$POOL" --comment "$POOL_COMMENT"
 
 echo "==> Role $ROLE"
 if pveum role list --output-format json | python3 -c "import json,sys; sys.exit(0 if any(r['roleid']=='$ROLE' for r in json.load(sys.stdin)) else 1)"; then
@@ -295,8 +310,8 @@ fi
 
 echo "==> User $USER_ID"
 pveum user list --output-format json | python3 -c "import json,sys; sys.exit(0 if any(u['userid']=='$USER_ID' for u in json.load(sys.stdin)) else 1)" \
-  || pveum user add "$USER_ID" --comment "MidCoast Lab provisioning (Terraform/Packer) for site $SITE_NAME. Tokens only."
-pveum user modify "$USER_ID" --comment "MidCoast Lab provisioning (Terraform/Packer) for site $SITE_NAME. Tokens only." >/dev/null 2>&1 || true
+  || pveum user add "$USER_ID" --comment "$USER_COMMENT"
+pveum user modify "$USER_ID" --comment "$USER_COMMENT" >/dev/null 2>&1 || true
 
 echo "==> ACLs"
 pveum acl modify "/pool/$POOL"                     --users "$USER_ID" --roles "$ROLE"
