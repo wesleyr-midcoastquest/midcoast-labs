@@ -678,6 +678,38 @@ own pool) warns a building site that has no template yet and points to that chec
 that no lab's teardown can threaten them. Any lab can be the owner today; a factory is
 the same thing without servers, and can follow if owners turn out to churn.
 
+## The site folder: a site's files outside the product (LAB-261128-00)
+
+`site.yaml` and the ledger used to sit in `inventory/`, next to the product, and every
+site committed them in its copy of the product repo. That works for one lab, but the
+product is shared: anyone who changes it and pushes from that copy can publish their
+site by mistake (it happened once, LAB-261106), and a product kept clean only by
+exporting it from a private copy can't take changes from more than one maintainer.
+
+So a site's files live in a **site folder**, `site/`: `site.yaml`, the ledger
+`instances.yaml` and, optionally, `deny.txt` (the site's private patterns). The product
+ignores the folder, and it is a git repository of its own, so the product repo never
+holds a site and the ledger's history (the build history) stays with the site.
+
+- **How the tools find it** (`Get-LabSiteDirectory`, Lab.Inventory): `MIDCOAST_LAB_SITE`
+  if set (a workstation keeping its site elsewhere), else `site/`, else the old
+  `inventory/` layout, with a warning. Both `site/site.yaml` and `inventory/site.yaml`
+  is an error: two copies would drift. The ledger is always next to `site.yaml`.
+- **On MGMT only `site\` counts** (`MIDCOAST_LAB_SITE` is refused for the repo at
+  `handover.repo_path`): the handover copies the repo folder, so a site inside it travels
+  with it, `.git` included, and the handover checks both histories and the ledger arrived.
+- **Not a git submodule**: the product would record a private URL and commit IDs.
+- **Terraform gets both paths** (`-var=ledger_path`, `-var=inventory_path`) on every plan
+  and apply, so `variables.tf`'s defaults never decide which ledger is read.
+- **Leaks are caught before a push**, not after: `tools/Test-LabPublicTree.ps1` refuses
+  site files, secrets and deny-list matches in the commits being pushed, and
+  `tools/Install-LabGitHooks.ps1` makes it a pre-push hook with the site's own
+  `deny.txt`. Once a branch is on GitHub it is public, so this is the only check that can
+  stop a leak; the deny list exists only on the site's side, since publishing the
+  patterns would publish what they protect.
+- **The old layout still works**, so existing labs take this release with nothing to do
+  and move when convenient.
+
 ## Known gaps
 
 - **Windows DHCP failover isn't in scope**, since the router serves DHCP. Make sure the

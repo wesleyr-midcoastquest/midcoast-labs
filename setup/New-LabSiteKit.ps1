@@ -2,7 +2,8 @@
 <#
 .SYNOPSIS
     Generates the site kit: a filled-in runbook and the Proxmox setup script,
-    from inventory/lab.yaml + inventory/site.yaml.
+    from inventory/lab.yaml + the site's site.yaml (site/site.yaml, the folder in
+    $env:MIDCOAST_LAB_SITE, or the old inventory/site.yaml).
 
 .DESCRIPTION
     Run on any machine with PowerShell 7 and the powershell-yaml module (your
@@ -26,9 +27,9 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path $PSScriptRoot -Parent
-if (-not $SitePath)   { $SitePath   = Join-Path $repo 'inventory/site.yaml' }
 if (-not $OutputRoot) { $OutputRoot = Join-Path $repo 'out/site-kit' }
 Import-Module (Join-Path $repo 'platform/modules/Lab.Inventory/Lab.Inventory.psm1') -Force -DisableNameChecking
+if (-not $SitePath)   { $SitePath   = Get-LabSiteFile -RepoRoot $repo -Name site }
 Import-Module powershell-yaml -ErrorAction Stop
 
 # 1. Validate (product + site + resolved).

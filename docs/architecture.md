@@ -22,7 +22,7 @@
 > v1.2 (Oct 2026): the inventory is split into the product (`lab.yaml`, the same at every
 > site) and the site (`site.yaml`: domains, subnet, Proxmox placement, VMID base), so the
 > lab can be built by another engineer on their own Proxmox, domain and tenant. Addresses,
-> VMIDs and domain names in this document are the example site's (`inventory/site.yaml`).
+> VMIDs and domain names in this document are the example site's (`site/site.yaml`).
 >
 > v1.1 (Oct 2026): AD domain is a subdomain of a domain the site owns (not `.local`); the lab subnet is a dedicated /24; the
 > OU structure is tiered; host naming uses a two-digit year; DC and MGMT addresses and VMIDs
@@ -65,7 +65,7 @@ All infrastructure originates from the inventory:
 
 ```text
 inventory/lab.yaml     the product: what the lab is (same at every site)
-inventory/site.yaml    the site: where it runs (domains, subnet, Proxmox, VMID base)
+site/site.yaml         the site: where it runs (domains, subnet, Proxmox, VMID base)
 ```
 
 Together they are authoritative. They are merged into one resolved inventory, which

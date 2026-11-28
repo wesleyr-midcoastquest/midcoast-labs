@@ -32,9 +32,14 @@ you'll need.
 
 Two files hold everything about a lab. `inventory/lab.yaml` is the **product**: roles,
 sizes, names, OUs, groups. It's the same for everyone; you don't edit it.
-`inventory/site.yaml` is **your site**: domain, subnet, Proxmox node, storage and the few
+`site/site.yaml` is **your site**: domain, subnet, Proxmox node, storage and the few
 other values that differ per installation. You make it from `inventory/site.template.yaml`;
-`inventory/site.example.yaml` shows a filled-in one.
+`inventory/site.example.yaml` shows a filled-in one. It lives in the **site folder**,
+`site/`, with the ledger (`site/instances.yaml`): the product repo ignores that folder,
+and it is a git repository of its own, so your site never mixes with the product. (On a
+workstation the site folder can be anywhere: set `MIDCOAST_LAB_SITE` to it. Labs set up
+before LAB-261128-00 keep `inventory/site.yaml` and `inventory/instances.yaml`; that still
+works, with a warning to move them: see the CHANGELOG.)
 
 ## A lab's lifecycle
 
@@ -72,7 +77,7 @@ other values that differ per installation. You make it from `inventory/site.temp
 [CHANGELOG.md](CHANGELOG.md) starts with what it needs from you: usually nothing beyond
 taking the new files, sometimes rebuilding templates or replacing machines, and only for
 a new major version a change to `site.yaml`. Take a release on the active MGMT by
-replacing everything except `inventory/site.yaml`, `inventory/instances.yaml` and your
+replacing everything except the site folder (`site/`) and your
 vault (or, in a clone, with `git fetch --tags` and `git merge` of the new release's tag); then run
 `Test-LabInventory.ps1`, which says if anything new is needed, and regenerate the site kit
 if you'll need the runbook again. `lab.yaml` shows the release you're on (`release`) and
@@ -145,7 +150,7 @@ The figures are per lab, on one node. Proxmox clustering isn't required.
 | **ISOs** | Windows Server 2022 evaluation, Windows 11 Enterprise evaluation, `virtio-win.iso` |
 | **A domain you own** | The AD forest is a subdomain of it (`ad.<domain>`); it's also the UPN suffix |
 | **Microsoft 365 / Entra tenant** with that domain verified | UPN suffix now; Entra Connect in Phase 3 (E5 developer licences are fine) |
-| **Git** (on MGMT) | The repo on MGMT must be a git repository: the pipeline commits the ledger (`instances.yaml`) after every run, and every MGMT replacement hands over the full history. MGMT's toolchain installs Git, and `Initialize-LabRepo.ps1` (runbook step 5) sets the repo up, with your git name and e-mail taken from `site.yaml`'s administrator. Not needed on your workstation, and no remote is needed |
+| **Git** (on MGMT) | The repo on MGMT and its site folder (`site/`) must be git repositories: the ledger (`site/instances.yaml`) is committed in the site's repo after every run, and every MGMT replacement hands over both histories. MGMT's toolchain installs Git, and `Initialize-LabRepo.ps1` (runbook step 5) sets the repo up, with your git name and e-mail taken from `site.yaml`'s administrator. Not needed on your workstation, and no remote is needed |
 | **A private git remote** (recommended) | GitHub, GitLab, or Gitea/Forgejo on another machine. Without one, the only copies of the ledger and its history live on MGMT. The repo holds no secrets, but keep it private: it maps your lab |
 | **A workstation with PowerShell 7 and `powershell-yaml`** | For checking your `site.yaml` and generating the site kit before MGMT-00 exists (Windows, macOS or Linux) |
 | **KeePassXC** | Installed on MGMT by the toolchain. Back up the `.kdbx` and its master password **outside the lab**: without them the lab's secrets are gone |
@@ -169,7 +174,7 @@ built the same way) builds a new **version** (`WIN2022-TEMPLATE-<YYMMDD>-<NN>`) 
 next free VMID of the template's range and makes it current. Existing VMs stay linked clones of the version they were built from; the next
 VM of that role (a rotation) gets the new one. A superseded version is deleted
 automatically once no VM uses it. Rebuild monthly, or after critical updates, and commit
-`inventory/instances.yaml` afterwards (the ledger lists the versions).
+the ledger afterwards (`git -C site add instances.yaml; git -C site commit`; the ledger lists the versions).
 
 ## Reference: validation IDs
 
@@ -190,14 +195,17 @@ unlock it ahead of time: `Unlock-SecretVault -Name MidCoastLab`. One entry by ha
 ## Reference: what's where
 
 ```
+site/                 YOUR SITE: gitignored by the product, a git repository of its own
+  site.yaml           this site: domains, subnet, Proxmox node/storage/bridge, VMID base, ISOs
+  instances.yaml      ledger of instances and template versions (pipeline-written; commit it here)
+  deny.txt            optional: your private patterns, for the pre-push hook (tools/Install-LabGitHooks.ps1)
 inventory/
   lab.yaml            the product: roles, sizes, slots, OUs, groups (same at every site)
-  site.yaml           this site: domains, subnet, Proxmox node/storage/bridge, VMID base, ISOs
   site.template.yaml  blank site.yaml for a new installation
-  instances.yaml      ledger of instances and template versions (pipeline-written; commit it)
+  site.example.yaml   a filled-in example
   resolved/           lab.yaml + site.yaml merged (generated, gitignored; read by Terraform/Packer)
 packer/windows/       WIN2022-TEMPLATE and WIN11-TEMPLATE (-var template_key=…)
-terraform/            VMs from the resolved inventory + instances.yaml
+terraform/            VMs from the resolved inventory + the ledger
 platform/             everything pushed into guests
   bootstrap.ps1       state machine: Common → Role:<stage>… → Validate → Complete
   validate.ps1        on-demand validation (runs as SYSTEM)
@@ -220,13 +228,15 @@ setup/
   proxmox/proxmox-setup.sh             template; run the site kit's copy, not this one
   proxmox/proxmox-teardown.sh          removes a site from Proxmox (keeps ISOs); run as-is
   mgmt/Install-MgmtTools.ps1           MGMT-00 step 5: toolchain (wraps platform/roles/mgmt-tools.ps1)
-  mgmt/Initialize-LabRepo.ps1          MGMT-00 step 5: repo at C:\MidCoastLab\repo, git init, git identity
+  mgmt/Initialize-LabRepo.ps1          MGMT-00 step 5: repo at C:\MidCoastLab\repo, git init (repo and site\), git identity
   mgmt/Initialize-LabVault.ps1         step 6, and once per account/MGMT: create/register the vault, generate secrets
   mgmt/Join-LabTailnet.ps1             step 6: MGMT-00 joins the tailnet (site.yaml tailscale.enabled)
   mgmt/Join-LabDomain.ps1              step 8: MGMT-00 joins the domain, post-join rules, restart
 tools/
   Export-LabRelease.ps1                exports a release (no site, no ledger) for the public repo
   New-LabScriptReference.ps1           regenerates docs/scripts.md from the scripts' own help
+  Test-LabPublicTree.ps1               refuses site files, secrets and deny-list matches in commits
+  Install-LabGitHooks.ps1              installs the pre-push hook that runs Test-LabPublicTree
 CHANGELOG.md          releases (LAB-<YYMMDD>-<NN>, tags match) and the compatibility version
 docs/
   NEW-SITE.md         what to collect, and how to fill in site.yaml
@@ -250,17 +260,21 @@ of its own, a domain in your Microsoft 365 tenant, the three ISOs.
 of it. Either way:
 - **Download it**: the release's **Source code (zip)**. (**Code → Download ZIP** gets
   `master` instead.)
-- **Clone it**, if you have Git, and make a branch of your own at the release, so your
-  site's commits (the ledger) have a branch to go on:
+- **Clone it**, if you have Git, at the release, and install the pre-push hook:
   ```
   git clone https://github.com/MidCoast-Labs/midcoast-labs.git
   cd midcoast-labs
   git switch -c my-site LAB-<YYMMDD>-<NN>
+  pwsh ./tools/Install-LabGitHooks.ps1
   ```
-  Take a later release with `git fetch --tags` and `git merge LAB-<YYMMDD>-<NN>`.
+  Take a later release with `git fetch --tags` and `git merge LAB-<YYMMDD>-<NN>`. The
+  hook checks every push from this clone for site files, secrets and the private patterns
+  in your `site/deny.txt` (one regular expression per line: your domain, addresses,
+  account names), so nothing of your site reaches a public repo by mistake. If you'll send
+  changes back to the product, it is the only check that runs **before** they are public.
 
-Your copy will soon hold your own `site.yaml`, which describes your lab: if you keep it in
-a git remote, keep that one **private**.
+Your site's files go in the folder `site/`, which the product ignores. Make it a git
+repository of its own (step 5); if you keep it in a git remote, keep that one **private**.
 
 **3. Windows only: unblock the files.** Windows marks downloaded files "from the
 internet", and PowerShell then refuses to run them ("… is not digitally signed").
@@ -285,9 +299,11 @@ Only unblock a copy you trust. You'll do the same again on MGMT-00 (the runbook 
 Install-Module powershell-yaml -Scope CurrentUser
 ```
 
-**5. Make your `site.yaml`**, from the repo's folder:
+**5. Make your `site.yaml`**, from the repo's folder, in the site folder:
 ```powershell
-Copy-Item inventory/site.template.yaml inventory/site.yaml
+New-Item site -ItemType Directory
+Copy-Item inventory/site.template.yaml site/site.yaml
+git -C site init      # if you have Git: the site's own repo (Initialize-LabRepo.ps1 does it otherwise)
 ```
 Then fill it in, using [docs/NEW-SITE.md](docs/NEW-SITE.md): it lists what to collect
 and what goes where.

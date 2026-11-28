@@ -52,7 +52,7 @@ $ErrorActionPreference = 'Stop'
 $repo = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
 Import-Module (Join-Path $repo 'orchestration/Lab.Orchestration.psm1') -Force -DisableNameChecking
 Import-Module Microsoft.PowerShell.SecretManagement, SecretManagement.KeePass
-$inv   = Import-LabInventory -ProductPath (Join-Path $repo 'inventory/lab.yaml') -SitePath (Join-Path $repo 'inventory/site.yaml')
+$inv   = Import-LabInventory -ProductPath (Join-Path $repo 'inventory/lab.yaml') -SitePath (Get-LabSiteFile -RepoRoot $repo -Name site)
 $vault = $inv.secrets.vault
 $e     = $inv.secrets.entries
 

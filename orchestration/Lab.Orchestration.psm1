@@ -14,7 +14,9 @@ Import-Module powershell-yaml -ErrorAction Stop
 function Get-LabRepoRoot { $script:RepoRoot }
 
 function Get-LabInventoryPath { Join-Path $script:RepoRoot 'inventory/lab.yaml' }
-function Get-LabSitePath      { Join-Path $script:RepoRoot 'inventory/site.yaml' }
+# The site's files are found by Get-LabSiteDirectory (Lab.Inventory): site/,
+# $env:MIDCOAST_LAB_SITE on a workstation, or the old inventory/ layout.
+function Get-LabSitePath      { Get-LabSiteFile -RepoRoot $script:RepoRoot -Name site }
 function Get-LabResolvedPath  { Join-Path $script:RepoRoot 'inventory/resolved/inventory.json' }
 
 function Get-LabResolvedInventory {
@@ -35,7 +37,7 @@ function Export-LabResolvedInventory {
     New-Item -ItemType Directory -Path (Split-Path $path -Parent) -Force | Out-Null
     $Inventory | ConvertTo-Json -Depth 30 | Set-Content -Path $path -Encoding utf8NoBOM
 }
-function Get-LabLedgerPath    { Join-Path $script:RepoRoot 'inventory/instances.yaml' }
+function Get-LabLedgerPath    { Get-LabSiteFile -RepoRoot $script:RepoRoot -Name ledger }
 
 function Get-LabRelease {
     # The release name from lab.yaml (LAB-<YYMMDD>-<NN>), read without YAML so it
@@ -528,7 +530,8 @@ function Invoke-LabTerraform {
     param(
         [Parameter(Mandatory)] $Inventory,
         [Parameter(Mandatory)] [ValidateSet('init', 'plan', 'apply', 'output')] [string] $Command,
-        # Plan against a different ledger (used by -PlanOnly so nothing is written).
+        # Plan against a different ledger (used by -PlanOnly so nothing is written);
+        # default: the site's ledger (Get-LabLedgerPath).
         [string] $LedgerPath,
         # plan: return the parsed JSON plan instead of printing it.
         [switch] $Json,
@@ -548,13 +551,16 @@ function Invoke-LabTerraform {
     $sa = $Inventory.proxmox.service_account
     $tokenSecret = Get-LabSecretText -Inventory $Inventory -Name $Inventory.secrets.entries.proxmox_terraform_token
     $env:PROXMOX_VE_API_TOKEN = "$($sa.user)!$($sa.token_name)=$tokenSecret"
+    # Both files by path, for plan and apply alike: the ledger lives with the
+    # site, not next to the product (variables.tf's defaults are only a fallback).
+    if (-not $LedgerPath) { $LedgerPath = Get-LabLedgerPath }
+    $varArgs = @("-var=ledger_path=$LedgerPath", "-var=inventory_path=$(Get-LabResolvedPath)")
     try {
         Push-Location $tfDir
         switch ($Command) {
             'init'   { & terraform init -input=false -no-color }
             'plan'   {
-                $planArgs = @('plan', '-input=false', '-no-color', "-state=$state")
-                if ($LedgerPath) { $planArgs += "-var=ledger_path=$LedgerPath" }
+                $planArgs = @('plan', '-input=false', '-no-color', "-state=$state") + $varArgs
                 if (-not $Json) { & terraform @planArgs }
                 else {
                     $planFile = Join-Path ([IO.Path]::GetTempPath()) "midcoast-$([guid]::NewGuid()).tfplan"
@@ -570,7 +576,7 @@ function Invoke-LabTerraform {
                 # instance (or this machine), then apply exactly that plan.
                 $planFile = Join-Path ([IO.Path]::GetTempPath()) "midcoast-$([guid]::NewGuid()).tfplan"
                 try {
-                    & terraform plan -input=false -no-color "-state=$state" "-out=$planFile"
+                    & terraform plan -input=false -no-color "-state=$state" @varArgs "-out=$planFile"
                     if ($LASTEXITCODE -ne 0) { throw "terraform plan failed (exit $LASTEXITCODE)." }
                     $plan = ConvertFrom-LabPlanJson -PlanFile $planFile
                     Assert-LabSafePlan -Plan $plan -AllowDelete $AllowDelete
@@ -919,7 +925,7 @@ function Assert-LabSafePlan {
         }
     }
     if ($bad.Count -gt 0) {
-        throw "Refusing to apply: the plan would delete or damage: $($bad -join ', '). Nothing was changed. If the ledger (inventory/instances.yaml) was edited or lost, restore it from git; machines are retired only through the pipeline."
+        throw "Refusing to apply: the plan would delete or damage: $($bad -join ', '). Nothing was changed. If the ledger (instances.yaml in the site folder) was edited or lost, restore it from git; machines are retired only through the pipeline."
     }
 }
 
@@ -1391,15 +1397,22 @@ function Send-LabHandover {
     # Repo, minus provider binaries and caches (re-created by terraform init).
     $copied += Send-LabFolder -Session $Session -Path $repo -Destination $h.repo_path -Exclude '.terraform', 'packer_cache'
 
-    # The repo must arrive with its history and its ledger.
-    $check = Invoke-Command -Session $Session -ArgumentList $h.repo_path -ScriptBlock {
-        param($Dest)
+    # The repo must arrive with its history and its ledger, and a site\ folder
+    # (the site's own repo, inside the product's folder) with its history too.
+    # On MGMT the site is always inside the repo (Get-LabSiteDirectory), so the
+    # same relative paths hold on the new MGMT.
+    $siteDir = Get-LabSiteDirectory -RepoRoot $repo
+    $ledgerRel = [IO.Path]::GetRelativePath($repo, (Get-LabLedgerPath))
+    $siteGitRel = if (Test-Path (Join-Path $siteDir '.git\HEAD')) { [IO.Path]::GetRelativePath($repo, (Join-Path $siteDir '.git\HEAD')) }
+    $check = Invoke-Command -Session $Session -ArgumentList $h.repo_path, $ledgerRel, $siteGitRel -ScriptBlock {
+        param($Dest, $LedgerRel, $SiteGitRel)
         [pscustomobject]@{
-            Git    = Test-Path (Join-Path $Dest '.git\HEAD')
-            Ledger = Test-Path (Join-Path $Dest 'inventory\instances.yaml')
+            Git     = Test-Path (Join-Path $Dest '.git\HEAD')
+            Ledger  = Test-Path (Join-Path $Dest $LedgerRel)
+            SiteGit = (-not $SiteGitRel) -or (Test-Path (Join-Path $Dest $SiteGitRel))
         }
     }
-    if (-not $check.Git -or -not $check.Ledger) { throw "Repo handover incomplete (git history: $($check.Git), ledger: $($check.Ledger))." }
+    if (-not $check.Git -or -not $check.Ledger -or -not $check.SiteGit) { throw "Repo handover incomplete (git history: $($check.Git), ledger $($ledgerRel): $($check.Ledger), site history: $($check.SiteGit))." }
 
     # Terraform state (and its backup, if present).
     $state = $Inventory.terraform.state.path
@@ -1600,11 +1613,15 @@ function Remove-LabComputerRecords {
 }
 
 function Write-LabCommitHint {
-    # The one line every pipeline run ends with: commit the ledger. Same wording
-    # everywhere, and the same as the guides.
+    # The one line every pipeline run ends with: commit the ledger, in the
+    # site's repo (git -C site; the old layout's is inventory, in the product
+    # repo). Same wording everywhere, and the same as the guides.
     [CmdletBinding()]
     param([Parameter(Mandatory)] [string] $Message)
-    Write-Host "Commit the ledger:  git add inventory/instances.yaml; git commit -m `"$Message`"; git push" -ForegroundColor Cyan
+    $site = Get-LabSiteDirectory -RepoRoot $script:RepoRoot
+    $rel = [IO.Path]::GetRelativePath($script:RepoRoot, $site)
+    $c = if ($rel.StartsWith('..') -or [IO.Path]::IsPathRooted($rel)) { "`"$site`"" } else { $rel.Replace('\', '/') }
+    Write-Host "Commit the ledger:  git -C $c add instances.yaml; git -C $c commit -m `"$Message`"; git -C $c push" -ForegroundColor Cyan
     Write-Host '                    (skip git push if the repo has no remote)'
 }
 

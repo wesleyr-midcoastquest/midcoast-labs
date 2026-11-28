@@ -3,7 +3,9 @@
 #   resolved/inventory.json  lab.yaml + site.yaml, merged by the orchestrator
 #                            (Get-LabResolvedInventory); never hand-edited
 #   instances.yaml           which instances exist (name, vmid, build date, slot,
-#                            and the template version each is cloned from)
+#                            and the template version each is cloned from); the
+#                            site's ledger, in site/ (Invoke-LabTerraform passes
+#                            both paths as -var)
 # Adding an instance to the ledger creates a VM; removing it destroys one.
 # VMs are linked clones (proxmox.clone_mode) of the template version pinned in
 # the ledger, so building a newer template never changes an existing VM.

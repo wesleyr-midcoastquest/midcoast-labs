@@ -15,7 +15,7 @@
 
 version: "1.8"                                   # CHANGED: 1.7 -> 1.8 (Tailscale per role: MGMT only)
                                                  # Compatibility number; changes rarely (see CHANGELOG.md).
-release: LAB-261127-03                           # ADDED: release name, LAB-<YYMMDD>-<NN>; every merged change gets a new one
+release: LAB-261128-00                           # ADDED: release name, LAB-<YYMMDD>-<NN>; every merged change gets a new one
 
 environment:
   name: MidCoast-Lab

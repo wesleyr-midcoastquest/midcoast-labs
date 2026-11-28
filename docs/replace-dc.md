@@ -18,10 +18,10 @@ both DCs together: reverting one DC alone puts it behind its partner. Delete the
 
 ```powershell
 ./orchestration/Invoke-LabDcRotation.ps1 -Stage Add      # optional: -Replace <DC name>; default the oldest
-git add inventory/instances.yaml; git commit -m "DC rotation: add"; git push
+git -C site add instances.yaml; git -C site commit -m "DC rotation: add"; git -C site push
 # ...check anything you like...
 ./orchestration/Invoke-LabDcRotation.ps1 -Stage Retire
-git add inventory/instances.yaml; git commit -m "DC rotation: retire"; git push
+git -C site add instances.yaml; git -C site commit -m "DC rotation: retire"; git -C site push
 ```
 
 **Add** checks both DCs pass validation, builds `DC-<today>-NN` in the free DC slot as a

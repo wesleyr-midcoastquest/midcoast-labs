@@ -190,7 +190,7 @@ if (-not $v.Ok) {
             if (-not $byId.ContainsKey([int] $t.vmid)) { $gone += "template $($t.name) (VMID $($t.vmid), current)" }
         }
         if ($gone.Count -gt 0) {
-            Add-Finding 'Error' 'Ledger' "The ledger lists machines that don't exist on Proxmox: $($gone -join '; '). The ledger describes a lab that is gone: reset it with ./orchestration/Reset-LabLedger.ps1 (it refuses while any listed VM still exists), then run again. For a single VM deleted by hand, remove its entry from inventory/instances.yaml and the Terraform state instead."
+            Add-Finding 'Error' 'Ledger' "The ledger lists machines that don't exist on Proxmox: $($gone -join '; '). The ledger describes a lab that is gone: reset it with ./orchestration/Reset-LabLedger.ps1 (it refuses while any listed VM still exists), then run again. For a single VM deleted by hand, remove its entry from the ledger ($(Get-LabLedgerPath)) and the Terraform state instead."
         }
     }
 

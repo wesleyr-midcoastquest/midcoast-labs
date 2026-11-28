@@ -3,7 +3,7 @@
 <!-- TEMPLATE-NOTE -->
 > **This page is a template.** `{{tokens}}` stand for your site's values. Run
 > `./setup/New-LabSiteKit.ps1` to get `out/site-kit/<site>/RUNBOOK.md`, a copy with every
-> value filled in from `inventory/site.yaml`, plus the matching `proxmox-setup.sh`.
+> value filled in from `site/site.yaml`, plus the matching `proxmox-setup.sh`.
 > New site? Start with the [README](../README.md): its checklist leads here.
 <!-- /TEMPLATE-NOTE -->
 
@@ -142,7 +142,8 @@ after the domain join), then delete the file as the script says (`shred -u ...`)
 
 ## 5. Toolchain and repo
 
-1. **Get the repo onto {{mgmt00.name}}**, with your filled-in `inventory/site.yaml` in it, in a
+1. **Get the repo onto {{mgmt00.name}}**, with your site folder in it (`site\site.yaml`, or a
+   clone of your private site repo as `site\`), in a
    folder of your choice; this guide uses `C:\Users\{{mgmt00.local_user}}\Downloads\midcoast-labs`.
    Any way works: Taildrop, a share, a USB drive, or download the latest release's zip from
    GitHub and extract it. (You don't need a git remote of your own; step 5.3 makes the copy a git
@@ -172,9 +173,10 @@ after the domain join), then delete the file as the script says (`shred -u ...`)
    cd C:\Users\{{mgmt00.local_user}}\Downloads\midcoast-labs
    ./setup/mgmt/Initialize-LabRepo.ps1
    ```
-   It copies the folder to `{{repo.path}}`, makes it a **git repository** if it isn't one
-   (a copied or extracted folder has no `.git`; the pipeline commits the ledger and hands
-   the history to every new MGMT), sets your git name and e-mail from `site.yaml`, commits
+   It copies the folder to `{{repo.path}}`, makes it and its `site\` folder **git
+   repositories** if they aren't (a copied or extracted folder has no `.git`; the ledger is
+   committed in `site\` and every new MGMT gets both histories), starts an empty ledger in
+   `site\` if there is none, sets your git name and e-mail from `site.yaml`, commits
    everything, and runs `Test-LabInventory.ps1` from there. Terraform state will live in
    `{{state.path}}`. From here on, work in `{{repo.path}}`.
 
@@ -228,10 +230,10 @@ In PowerShell 7, from `{{repo.path}}`:
 ./orchestration/Test-LabSite.ps1             # live: Proxmox, VMIDs, lab addresses
 ./orchestration/Build-LabTemplate.ps1 -Template windows_server_2022   # WIN2022-TEMPLATE, about an hour
 ./orchestration/Build-LabTemplate.ps1 -Template windows_11            # WIN11-TEMPLATE, about an hour
-git add inventory/instances.yaml; git commit -m "Templates"
+git -C site add instances.yaml; git -C site commit -m "Templates"
 ./orchestration/Invoke-LabPhase.ps1 -Phase 1 -PlanOnly
 ./orchestration/Invoke-LabPhase.ps1 -Phase 1 # two DCs, about an hour
-git add inventory/instances.yaml; git commit -m "Phase 1"
+git -C site add instances.yaml; git -C site commit -m "Phase 1"
 ```
 
 **Borrowing templates** (`site.yaml templates.shared_from`): skip the two
@@ -317,7 +319,7 @@ Terraform state and the vault, and then retires {{mgmt00.name}}. About an hour.
 3. **Once you're happy with the new MGMT**, retire {{mgmt00.name}} for good, still on the new MGMT:
    ```powershell
    ./orchestration/Invoke-LabMgmtRotation.ps1 -Stage Complete
-   git add inventory/instances.yaml; git commit -m "MGMT rotation: {{mgmt00.name}} retired"
+   git -C site add instances.yaml; git -C site commit -m "MGMT rotation: {{mgmt00.name}} retired"
    ```
    It destroys VM `{{mgmt00.vmid}}` and removes its computer account and DNS records. If
    {{mgmt00.name}} joined your tailnet, remove `{{mgmt00.name_lower}}` in the Tailscale admin
@@ -331,7 +333,7 @@ every script and its switches are listed in `docs/scripts.md`.
 ## Starting over
 
 To rebuild from nothing, first save what you want from the current MGMT (your
-`site.yaml`; the vault, if you'll need an old secret). Then copy
+site folder, `site\`, with `site.yaml`; the vault, if you'll need an old secret). Then copy
 `setup/proxmox/proxmox-teardown.sh` to `{{proxmox.node}}` and, as root:
 
 ```bash
@@ -348,7 +350,7 @@ machines in the Tailscale admin console too, then begin again at step 3 (the rou
 the ISOs are still there).
 
 **Reset the ledger before step 7.** The teardown can't touch your repo, so
-`inventory/instances.yaml` still lists the old DCs, MGMT and template versions (a fresh
+the ledger (`site\instances.yaml`) still lists the old DCs, MGMT and template versions (a fresh
 clone of your repo carries them too), and `{{state.path}}` may still hold their Terraform
 state; with either in place `Test-LabSite.ps1` fails with *the ledger lists machines that
 don't exist* and Phase 1 won't run. On the new {{mgmt00.name}}, after step 5:

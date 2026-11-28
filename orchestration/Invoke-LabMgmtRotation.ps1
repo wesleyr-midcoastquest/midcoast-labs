@@ -126,6 +126,11 @@ try {
         Push-Location (Get-LabRepoRoot)
         try {
             if (& git status --porcelain 2>$null) { Write-Warning 'The repo has uncommitted changes. They are handed over as they are; consider committing first.' }
+            # The site's own repo (site\), which holds the ledger.
+            $siteDir = Get-LabSiteDirectory -RepoRoot (Get-LabRepoRoot)
+            if (Test-Path (Join-Path $siteDir '.git')) {
+                if (& git -C $siteDir status --porcelain 2>$null) { Write-Warning "The site repo ($siteDir) has uncommitted changes (the ledger?). They are handed over as they are; consider committing first: git -C site add instances.yaml; git -C site commit; git -C site push" }
+            }
         } finally { Pop-Location }
 
         # ── Allocate (or resume) the replacement ─────────────────────────────

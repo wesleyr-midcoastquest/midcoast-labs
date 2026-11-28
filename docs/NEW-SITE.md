@@ -1,8 +1,8 @@
 # Your site: what to collect, and how to fill in `site.yaml`
 
 This is step 5 of the README's checklist. Everything that differs between one MidCoast
-Lab and another is in one file, `inventory/site.yaml`: your domain, your network, your
-Proxmox. This page lists what to collect for it, where to find each value, and how to
+Lab and another is in one file, `site/site.yaml` (in the site folder, which the product
+ignores): your domain, your network, your Proxmox. This page lists what to collect for it, where to find each value, and how to
 write it in. Then you go back to the README checklist (step 6) to check it.
 
 Everything else (roles, sizes, host numbers, the OU tree, groups, naming, validation) is
@@ -94,8 +94,14 @@ If you haven't yet, make it from the template, in the repo's folder (README chec
 step 5):
 
 ```powershell
-Copy-Item inventory/site.template.yaml inventory/site.yaml
+New-Item site -ItemType Directory
+Copy-Item inventory/site.template.yaml site/site.yaml
 ```
+
+`site/` is your site's folder: it will also hold the ledger (`instances.yaml`) and,
+optionally, `deny.txt`, your private patterns for the pre-push hook
+(`tools/Install-LabGitHooks.ps1`). Make it a git repository of its own (`git -C site init`);
+if it has a remote, keep that one private.
 
 Open it in any text editor and replace every `<placeholder>` with what you collected,
 **angle brackets included**. The comments in the file say what each one is.

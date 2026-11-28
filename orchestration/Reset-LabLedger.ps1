@@ -6,7 +6,7 @@
 
 .DESCRIPTION
     proxmox-teardown.sh destroys the lab's VMs on Proxmox, but the ledger
-    (inventory/instances.yaml) lives in the repo and still lists the old DCs,
+    (instances.yaml, in the site folder) still lists the old DCs,
     MGMT and template versions, and C:\MidCoastLab\state still holds Terraform
     state for them. The next Invoke-LabPhase then believes the lab is deployed
     (issue #20). This script:
@@ -16,7 +16,8 @@
       2. Empties instances:, drops every template version that is gone from
          Proxmox (a version that still exists is kept), removes the Terraform
          state file and its backup, and the handover and CERT lock files.
-      3. Commits the ledger (git add + commit; push is left to you).
+      3. Commits the ledger in the site's repo (git -C site add + commit, or
+         the product repo for the old inventory/ layout; push is left to you).
     Run it on the machine that will run the pipeline next (MGMT-00 of the new
     build), after Initialize-LabRepo.ps1. A fresh clone of your repo carries
     the old ledger too, so a new MGMT-00 needs it as much as an old one.
@@ -90,16 +91,17 @@ foreach ($f in $files) { Remove-Item -Path $f -Force; Write-Host "Removed $f" }
 Save-LabLedger -Instances @() -Templates $keepTemplates
 Write-Host "Reset $path"
 
-Push-Location (Get-LabRepoRoot)
-try {
-    if (Get-Command git -ErrorAction SilentlyContinue) {
-        & git add -- inventory/instances.yaml
-        if (& git status --porcelain -- inventory/instances.yaml) {
-            & git commit -q -m "Reset the ledger after teardown ($($inv.site.name))" -- inventory/instances.yaml
-            if ($LASTEXITCODE -eq 0) { Write-Host 'Committed the ledger (git push when you are ready).' }
-            else { Write-Warning 'git commit failed; commit inventory/instances.yaml yourself.' }
-        } else { Write-Host 'Ledger unchanged in git.' }
-    } else { Write-Warning 'git is not on the PATH; commit inventory/instances.yaml yourself.' }
-} finally { Pop-Location }
+# The ledger is committed where it lives: the site's repo (site\), or the
+# product repo for the old inventory\ layout. git -C works for both.
+$siteDir = Split-Path $path -Parent
+$leaf    = Split-Path $path -Leaf
+if (Get-Command git -ErrorAction SilentlyContinue) {
+    & git -C $siteDir add -- $leaf
+    if (& git -C $siteDir status --porcelain -- $leaf) {
+        & git -C $siteDir commit -q -m "Reset the ledger after teardown ($($inv.site.name))" -- $leaf
+        if ($LASTEXITCODE -eq 0) { Write-Host "Committed the ledger in $siteDir (git push when you are ready)." }
+        else { Write-Warning "git commit failed; commit $path yourself." }
+    } else { Write-Host 'Ledger unchanged in git.' }
+} else { Write-Warning "git is not on the PATH; commit $path yourself." }
 
 Write-Host "`nDone. The next Invoke-LabPhase.ps1 -Phase 1 builds a new forest." -ForegroundColor Green

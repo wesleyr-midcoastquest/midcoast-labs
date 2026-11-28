@@ -184,6 +184,77 @@ function Import-LabInventory {
     Resolve-LabInventory -Product $product -Site $site
 }
 
+# ── Where the site's files are ──────────────────────────────────────────
+# A site's own files (site.yaml, the ledger instances.yaml, an optional
+# deny.txt) live in one site directory, outside the product: the product repo
+# is shared by every site. The directory is the first of:
+#   1. $env:MIDCOAST_LAB_SITE (workstations; refused on MGMT, where the
+#      handover must carry the site with the repo folder)
+#   2. <repo>/site/   (gitignored in the product; a clone of the site's repo)
+#   3. <repo>/inventory/  (the old layout, before LAB-261128-00; warns)
+# that holds site.yaml. site/site.yaml and inventory/site.yaml both present is
+# an error: two copies would drift. With none, it's <repo>/site, so "not found"
+# messages name the place a new site should use.
+
+$script:LabSiteFileNames = @{ site = 'site.yaml'; ledger = 'instances.yaml'; deny = 'deny.txt' }
+$script:LabOldLayoutWarned = $false
+
+function Test-LabMgmtRepo {
+    # True when RepoRoot is the pipeline's repo on MGMT (lab.yaml
+    # handover.repo_path, C:\MidCoastLab\repo). Read without YAML.
+    param([Parameter(Mandatory)] [string] $RepoRoot)
+    $lab = Join-Path $RepoRoot 'inventory/lab.yaml'
+    $mgmtRepo = 'C:\MidCoastLab\repo'
+    if (Test-Path $lab) {
+        $line = Select-String -Path $lab -Pattern '^\s*repo_path:\s*"?([^"#]+?)"?\s*(#.*)?$' -List
+        if ($line) { $mgmtRepo = $line.Matches[0].Groups[1].Value.Trim() }
+    }
+    $a = [IO.Path]::GetFullPath($RepoRoot).TrimEnd('\', '/')
+    $b = $mgmtRepo.TrimEnd('\', '/')
+    [string]::Equals($a, $b, [StringComparison]::OrdinalIgnoreCase)
+}
+
+function Get-LabSiteDirectory {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] [string] $RepoRoot)
+    $fromEnv = $env:MIDCOAST_LAB_SITE
+    if ($fromEnv) {
+        if (Test-LabMgmtRepo -RepoRoot $RepoRoot) {
+            throw "MIDCOAST_LAB_SITE is set ($fromEnv), but this is the pipeline's repo on MGMT ($RepoRoot): there the site must be the site\ folder in the repo, so the handover carries it. Clear the variable."
+        }
+        if (-not (Test-Path (Join-Path $fromEnv 'site.yaml'))) {
+            throw "MIDCOAST_LAB_SITE is $fromEnv, which has no site.yaml."
+        }
+        return [IO.Path]::GetFullPath($fromEnv)
+    }
+    $new = Join-Path $RepoRoot 'site'
+    $old = Join-Path $RepoRoot 'inventory'
+    $hasNew = Test-Path (Join-Path $new 'site.yaml')
+    $hasOld = Test-Path (Join-Path $old 'site.yaml')
+    if ($hasNew -and $hasOld) {
+        throw "Two site.yaml files: $(Join-Path $new 'site.yaml') and $(Join-Path $old 'site.yaml'). Keep the one in site\ (with instances.yaml next to it) and delete the other."
+    }
+    if ($hasOld) {
+        if (-not $script:LabOldLayoutWarned) {
+            Write-Warning "This site still uses the old layout (inventory/site.yaml and inventory/instances.yaml). It works, but move both into site/ when convenient (CHANGELOG, LAB-261128-00)."
+            $script:LabOldLayoutWarned = $true
+        }
+        return $old
+    }
+    $new
+}
+
+function Get-LabSiteFile {
+    # A site file's path (which may not exist yet): site (site.yaml), ledger
+    # (instances.yaml) or deny (deny.txt), all from Get-LabSiteDirectory.
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [string] $RepoRoot,
+        [Parameter(Mandatory)] [ValidateSet('site', 'ledger', 'deny')] [string] $Name
+    )
+    Join-Path (Get-LabSiteDirectory -RepoRoot $RepoRoot) $script:LabSiteFileNames[$Name]
+}
+
 function ConvertTo-LabYymmdd {
     [CmdletBinding()]
     param([Parameter(Mandatory)] $Date)
@@ -390,4 +461,5 @@ Export-ModuleMember -Function Get-LabInventory, ConvertTo-LabYymmdd, New-LabHost
     Get-LabRoleDefinition, Test-LabRoleTailscale, Get-LabTemplateKey, Get-LabDomainDN, ConvertTo-LabOUDistinguishedName,
     Get-LabPrefixLength, Get-LabRoleAddresses, Get-LabDnsClientServers, ConvertTo-LabSiteSlug, Get-LabInstances, Get-LabTemplateVersions, Get-LabActiveDCs,
     Get-LabTierOU, Get-LabOUTier, Get-LabComputerOUs, Get-LabGroupNames,
-    ConvertTo-LabHostAddress, Resolve-LabInventory, Import-LabInventory
+    ConvertTo-LabHostAddress, Resolve-LabInventory, Import-LabInventory,
+    Get-LabSiteDirectory, Get-LabSiteFile

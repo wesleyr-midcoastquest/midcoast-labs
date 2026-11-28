@@ -13,6 +13,12 @@
     checks: lab.yaml holds no site settings. Then every semantic rule runs on
     the resolved inventory.
 
+.PARAMETER SitePath
+    site.yaml to check. Default: the site folder's (site/site.yaml, the folder in
+    $env:MIDCOAST_LAB_SITE, or the old inventory/site.yaml).
+.PARAMETER LedgerPath
+    The ledger to check. Default: instances.yaml in the same site folder.
+
 .EXAMPLE
     ./orchestration/Test-LabInventory.ps1
 .EXAMPLE
@@ -29,9 +35,10 @@ param(
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path $PSScriptRoot -Parent
 if (-not $InventoryPath) { $InventoryPath = Join-Path $repo 'inventory/lab.yaml' }
-if (-not $SitePath)      { $SitePath      = Join-Path $repo 'inventory/site.yaml' }
-if (-not $LedgerPath)    { $LedgerPath    = Join-Path $repo 'inventory/instances.yaml' }
 Import-Module (Join-Path $repo 'platform/modules/Lab.Inventory/Lab.Inventory.psm1') -Force -DisableNameChecking
+# Site files: site/, $env:MIDCOAST_LAB_SITE, or the old inventory/ layout (Get-LabSiteDirectory).
+if (-not $SitePath)      { $SitePath      = Get-LabSiteFile -RepoRoot $repo -Name site }
+if (-not $LedgerPath)    { $LedgerPath    = Get-LabSiteFile -RepoRoot $repo -Name ledger }
 Import-Module powershell-yaml -ErrorAction Stop
 
 $findings = [System.Collections.Generic.List[object]]::new()

@@ -5,7 +5,7 @@ variable "inventory_path" {
 }
 
 variable "ledger_path" {
-  description = "Path to inventory/instances.yaml (written by the orchestrator)."
+  description = "Path to the site's ledger, instances.yaml (written by the orchestrator, which always passes it)."
   type        = string
-  default     = "../inventory/instances.yaml"
+  default     = "../site/instances.yaml"
 }
