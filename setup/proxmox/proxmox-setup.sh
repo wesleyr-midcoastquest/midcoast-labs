@@ -184,14 +184,20 @@ for u in json.load(sys.stdin):
 MGMT00_EXISTS=0
 qm status "$MGMT00_VMID" >/dev/null 2>&1 && MGMT00_EXISTS=1
 ISO_LIST="$(pvesm list "$ISO_STORAGE" --content iso 2>/dev/null | awk 'NR>1 {print $1}' || true)"
+iso_present() { grep -qxF -- "$1" <<< "$ISO_LIST"; }
+# The two ISOs MGMT-00 needs are checked by their own variables, so a missing one
+# fails pre-flight whatever ISO_FILES holds (issue #33).
+NEED_MGMT00_ISOS=0
+[[ "$CREATE_MGMT00" == "1" && "$MGMT00_EXISTS" == "0" ]] && NEED_MGMT00_ISOS=1
+if [[ "$NEED_MGMT00_ISOS" == "1" ]]; then
+  for f in "$MGMT00_ISO" "$VIRTIO_ISO"; do
+    iso_present "$f" || fail "ISO $f isn't uploaded (MGMT-00 needs it)."
+  done
+fi
+# ISO_FILES is space-separated; Test-LabInventory rejects ISO names with spaces.
 for f in $ISO_FILES; do
-  if ! grep -qxF "$f" <<< "$ISO_LIST"; then
-    if [[ "$CREATE_MGMT00" == "1" && "$MGMT00_EXISTS" == "0" && ( "$f" == "$MGMT00_ISO" || "$f" == "$VIRTIO_ISO" ) ]]; then
-      fail "ISO $f isn't uploaded (MGMT-00 needs it)."
-    else
-      warn "ISO $f isn't uploaded yet (template builds need it)."
-    fi
-  fi
+  [[ "$NEED_MGMT00_ISOS" == "1" && ( "$f" == "$MGMT00_ISO" || "$f" == "$VIRTIO_ISO" ) ]] && continue
+  iso_present "$f" || warn "ISO $f isn't uploaded yet (template builds need it)."
 done
 
 # Templates (1.7). Only versions tagged site-neutral can serve another lab: older

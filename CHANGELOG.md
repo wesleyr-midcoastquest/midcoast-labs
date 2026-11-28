@@ -18,6 +18,28 @@ Two numbers, in `inventory/lab.yaml`:
 Every release section starts with what it needs: *nothing*, *rebuild templates*, *rotate
 DCs / MGMT*, or *site.yaml change*. Details and reasons: [docs/decisions.md](docs/decisions.md).
 
+## LAB-261128-02 (compatibility 1.8): an ISO name with a space fails validation and pre-flight
+
+Needs: nothing for a lab that's already set up. For a site still being set up,
+regenerate the site kit (`./setup/New-LabSiteKit.ps1`) and run the new
+`proxmox-setup.sh` (issue #33).
+
+Fixed:
+- **An `isos:` value with a space passed `proxmox-setup.sh` pre-flight**, e.g.
+  `local:iso/CLIENT_EVAL x64.iso`. Pre-flight split it into two names, neither matched
+  the MGMT-00 ISO, so a missing MGMT-00 ISO was only a warning; setup then created the
+  pool, role, user, tokens and ACLs and failed at `qm create`, part-way done.
+
+Changed:
+- **`Test-LabInventory.ps1` rejects whitespace in an `isos:` value** (`IsoName`, an
+  error naming the setting and the value), so `New-LabSiteKit.ps1` refuses to generate
+  a kit for it. A Proxmox volume name can't usefully contain a space: rename the file.
+- **Pre-flight checks the Windows 11 and VirtIO ISOs by their own values** (`MGMT00_ISO`,
+  `VIRTIO_ISO`), not by matching items of the space-separated `ISO_FILES`. A missing one
+  fails pre-flight, before anything is created, whatever `ISO_FILES` holds, when MGMT-00
+  is to be created. Otherwise (MGMT-00 exists, or `CREATE_MGMT00=0`) and for template-only
+  ISOs, a missing ISO is still a warning.
+
 ## LAB-261128-01 (compatibility 1.8): a re-run of proxmox-setup.sh accepts its own user
 
 Needs: nothing for a lab that's already set up. For a site still being set up,

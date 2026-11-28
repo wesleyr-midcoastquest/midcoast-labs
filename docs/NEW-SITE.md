@@ -120,7 +120,8 @@ A few things to watch:
 - **Indentation is meaningful** in YAML: keep the spaces as they are, and use spaces,
   never tabs.
 - **ISOs** are written `<iso storage>:iso/<file name>`, e.g.
-  `local:iso/virtio-win.iso`.
+  `local:iso/virtio-win.iso`. File names can't contain spaces: rename the file on the
+  node if it has one.
 - **Time zones with spaces** are fine as they are (`time_zone: Eastern Standard Time`).
 - **More administrators**: copy the whole `- username:` block, keep its indentation, and
   give each a tier.
@@ -141,7 +142,8 @@ you've written. When it complains:
   `10.88.20.1/24`).
 - **Gateway**: it must be inside the subnet, and outside `.10`–`.49`.
 - **`vmid_base`**: it must be 100 or more.
-- **ISOs**: each must be on the storage named in `iso_repository`.
+- **ISOs**: each must be on the storage named in `iso_repository`, and file names can't
+  contain spaces.
 - **A product setting in `site.yaml`**: something that belongs in `lab.yaml` was added;
   remove it.
 - **Warning about a common home-router subnet** (`192.168.0.0/24`, `192.168.1.0/24` and
